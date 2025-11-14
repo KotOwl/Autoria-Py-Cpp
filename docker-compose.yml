@@ -1,0 +1,29 @@
+# FILE: docker-compose.yml
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend/data:/app/build/data
+      - ./backend/uploads:/app/build/uploads
+    environment:
+      - PORT=8080
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    depends_on:
+      - backend
+    environment:
+      - API_BASE_URL=http://backend:8080
+    volumes:
+      - ./frontend/static/uploads:/app/static/uploads
+

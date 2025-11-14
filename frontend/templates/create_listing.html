@@ -1,0 +1,357 @@
+<!-- FILE: frontend/templates/create_listing.html -->
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Створити оголошення - AutoRia Clone</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .navbar {
+            background: white;
+            padding: 15px 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .navbar h1 {
+            color: #667eea;
+            font-size: 24px;
+        }
+        .nav-links {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        .nav-links a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .container {
+            max-width: 800px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+        .form-card {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #333;
+            font-weight: 500;
+        }
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        .form-group textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1><a href="/" style="color: #667eea; text-decoration: none;">🚗 AutoRia Clone</a></h1>
+        <div class="nav-links">
+            <a href="/">Головна</a>
+            <a href="/my-listings">Мої оголошення</a>
+            <a href="/profile">Профіль</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="form-card">
+            <h2 style="margin-bottom: 20px; color: #333;">Створити оголошення</h2>
+            
+            {% if error %}
+            <div class="error">{{ error }}</div>
+            {% endif %}
+            
+            <form method="POST" action="/create-listing">
+                <div class="form-group">
+                    <label>Марка *</label>
+                    <select name="brand_id" id="brand_id" required onchange="loadModels()">
+                        <option value="">Оберіть марку</option>
+                        {% for brand in brands %}
+                        <option value="{{ brand.id }}">{{ brand.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Модель *</label>
+                    <select name="model_id" id="model_id" required>
+                        <option value="">Спочатку оберіть марку</option>
+                    </select>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Рік випуску *</label>
+                        <input type="number" name="year" min="1900" max="2025" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Пробіг (км) *</label>
+                        <input type="number" name="mileage" min="0" required>
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Ціна *</label>
+                        <input type="number" name="price" step="0.01" min="0" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Валюта *</label>
+                        <select name="currency" required>
+                            <option value="UAH">UAH</option>
+                            <option value="USD">USD</option>
+                            <option value="EUR">EUR</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Регіон *</label>
+                    <select name="region" required>
+                        <option value="">Оберіть регіон</option>
+                        <option value="Київ">Київ</option>
+                        <option value="Київська область">Київська область</option>
+                        <option value="Львів">Львів</option>
+                        <option value="Львівська область">Львівська область</option>
+                        <option value="Одеса">Одеса</option>
+                        <option value="Одеська область">Одеська область</option>
+                        <option value="Харків">Харків</option>
+                        <option value="Харківська область">Харківська область</option>
+                        <option value="Дніпро">Дніпро</option>
+                        <option value="Дніпропетровська область">Дніпропетровська область</option>
+                        <option value="Запоріжжя">Запоріжжя</option>
+                        <option value="Запорізька область">Запорізька область</option>
+                        <option value="Вінниця">Вінниця</option>
+                        <option value="Вінницька область">Вінницька область</option>
+                        <option value="Житомир">Житомир</option>
+                        <option value="Житомирська область">Житомирська область</option>
+                        <option value="Івано-Франківськ">Івано-Франківськ</option>
+                        <option value="Івано-Франківська область">Івано-Франківська область</option>
+                        <option value="Кропивницький">Кропивницький</option>
+                        <option value="Кіровоградська область">Кіровоградська область</option>
+                        <option value="Луцьк">Луцьк</option>
+                        <option value="Волинська область">Волинська область</option>
+                        <option value="Миколаїв">Миколаїв</option>
+                        <option value="Миколаївська область">Миколаївська область</option>
+                        <option value="Полтава">Полтава</option>
+                        <option value="Полтавська область">Полтавська область</option>
+                        <option value="Рівне">Рівне</option>
+                        <option value="Рівненська область">Рівненська область</option>
+                        <option value="Суми">Суми</option>
+                        <option value="Сумська область">Сумська область</option>
+                        <option value="Тернопіль">Тернопіль</option>
+                        <option value="Тернопільська область">Тернопільська область</option>
+                        <option value="Ужгород">Ужгород</option>
+                        <option value="Закарпатська область">Закарпатська область</option>
+                        <option value="Хмельницький">Хмельницький</option>
+                        <option value="Хмельницька область">Хмельницька область</option>
+                        <option value="Черкаси">Черкаси</option>
+                        <option value="Черкаська область">Черкаська область</option>
+                        <option value="Чернівці">Чернівці</option>
+                        <option value="Чернівецька область">Чернівецька область</option>
+                        <option value="Чернігів">Чернігів</option>
+                        <option value="Чернігівська область">Чернігівська область</option>
+                        <option value="Донецьк">Донецьк</option>
+                        <option value="Донецька область">Донецька область</option>
+                        <option value="Луганськ">Луганськ</option>
+                        <option value="Луганська область">Луганська область</option>
+                        <option value="Севастополь">Севастополь</option>
+                        <option value="АР Крим">АР Крим</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Опис *</label>
+                    <textarea name="description" required></textarea>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Тип палива</label>
+                        <select name="fuel_type">
+                            <option value="">Не вказано</option>
+                            <option value="petrol">Бензин</option>
+                            <option value="diesel">Дизель</option>
+                            <option value="electric">Електрика</option>
+                            <option value="hybrid">Гібрид</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Коробка передач</label>
+                        <select name="transmission">
+                            <option value="">Не вказано</option>
+                            <option value="manual">Механічна</option>
+                            <option value="automatic">Автоматична</option>
+                            <option value="robot">Робот</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Колір</label>
+                        <input type="text" name="color" placeholder="Наприклад: Чорний">
+                    </div>
+                    <div class="form-group">
+                        <label>Тип кузова</label>
+                        <select name="body_type">
+                            <option value="">Не вказано</option>
+                            <option value="sedan">Седан</option>
+                            <option value="hatchback">Хетчбек</option>
+                            <option value="suv">SUV</option>
+                            <option value="coupe">Купе</option>
+                            <option value="wagon">Універсал</option>
+                            <option value="van">Фургон</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Об'єм двигуна (л)</label>
+                        <input type="number" name="engine_volume" step="0.1" min="0" placeholder="2.0">
+                    </div>
+                    <div class="form-group">
+                        <label>Потужність (к.с.)</label>
+                        <input type="number" name="engine_power" min="0" placeholder="150">
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Кількість дверей</label>
+                    <select name="doors_count">
+                        <option value="">Не вказано</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Фотографії (опціонально)</label>
+                    <input type="file" name="photos" multiple accept="image/*" id="photo-input" onchange="previewPhotos(this)">
+                    <p style="color: #666; font-size: 12px; margin-top: 5px;">Можна вибрати кілька файлів (макс. 10)</p>
+                    <div id="photo-preview" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 15px;"></div>
+                </div>
+                
+                <script>
+                function previewPhotos(input) {
+                    const preview = document.getElementById('photo-preview');
+                    preview.innerHTML = '';
+                    
+                    if (input.files && input.files.length > 0) {
+                        const maxFiles = Math.min(input.files.length, 10);
+                        for (let i = 0; i < maxFiles; i++) {
+                            const file = input.files[i];
+                            if (file.type.startsWith('image/')) {
+                                const reader = new FileReader();
+                                reader.onload = function(e) {
+                                    const div = document.createElement('div');
+                                    div.style.cssText = 'position: relative; border-radius: 5px; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.1);';
+                                    div.innerHTML = '<img src="' + e.target.result + '" style="width: 100%; height: 150px; object-fit: cover; display: block;">';
+                                    preview.appendChild(div);
+                                };
+                                reader.readAsDataURL(file);
+                            }
+                        }
+                    }
+                }
+                </script>
+                
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button type="submit" class="btn btn-primary">Створити оголошення</button>
+                    <a href="/my-listings" class="btn btn-secondary">Скасувати</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function loadModels() {
+            const brandId = document.getElementById('brand_id').value;
+            const modelSelect = document.getElementById('model_id');
+            modelSelect.innerHTML = '<option value="">Завантаження...</option>';
+            
+            if (!brandId) {
+                modelSelect.innerHTML = '<option value="">Спочатку оберіть марку</option>';
+                return;
+            }
+            
+            fetch(`/api/brands/${brandId}/models`)
+                .then(response => response.json())
+                .then(models => {
+                    modelSelect.innerHTML = '<option value="">Оберіть модель</option>';
+                    models.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.id;
+                        option.textContent = model.name;
+                        modelSelect.appendChild(option);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading models:', error);
+                    modelSelect.innerHTML = '<option value="">Помилка завантаження</option>';
+                });
+        }
+    </script>
+</body>
+</html>
+

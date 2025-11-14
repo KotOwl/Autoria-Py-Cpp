@@ -1,0 +1,19 @@
+# Build
+backend/build/
+backend/autoria.db
+backend/autoria.db-journal
+
+# Python
+frontend/venv/
+frontend/__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+
+

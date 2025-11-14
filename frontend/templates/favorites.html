@@ -1,0 +1,106 @@
+<!-- FILE: frontend/templates/favorites.html -->
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Обрані оголошення - AutoRia Clone</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .navbar {
+            background: white;
+            padding: 15px 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .navbar h1 {
+            color: #667eea;
+            font-size: 24px;
+        }
+        .nav-links {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        .nav-links a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+        .listing {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            cursor: pointer;
+        }
+        .listing h3 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .listing p {
+            color: #666;
+            margin: 5px 0;
+        }
+        .empty-state {
+            background: white;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1><a href="/" style="color: #667eea; text-decoration: none;">🚗 AutoRia Clone</a></h1>
+        <div class="nav-links">
+            <a href="/">Головна</a>
+            <a href="/create-listing">Створити оголошення</a>
+            <a href="/my-listings">Мої оголошення</a>
+            <a href="/profile">Профіль</a>
+            <a href="/logout">Вихід</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h2 style="color: white; margin-bottom: 20px;">⭐ Обрані оголошення</h2>
+        
+        {% if listings %}
+            {% for listing in listings %}
+            <div class="listing" onclick="window.location.href='/listing/{{ listing.id }}'">
+                <h3>
+                    {% if listing.brandName and listing.modelName %}
+                        {{ listing.brandName }} {{ listing.modelName }}
+                    {% else %}
+                        Оголошення #{{ listing.id }}
+                    {% endif %}
+                </h3>
+                <p><strong>Рік:</strong> {{ listing.year }}</p>
+                <p><strong>Ціна:</strong> {{ listing.price }} {{ listing.currency }}</p>
+                <p><strong>Регіон:</strong> {{ listing.region }}</p>
+                <p><strong>Пробіг:</strong> {{ listing.mileage }} км</p>
+            </div>
+            {% endfor %}
+        {% else %}
+        <div class="empty-state">
+            <h2>У вас поки немає обраних оголошень</h2>
+            <p>Додайте оголошення до обраних, щоб швидко знайти їх пізніше</p>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+

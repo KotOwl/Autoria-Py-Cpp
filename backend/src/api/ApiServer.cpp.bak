@@ -1,0 +1,2397 @@
+// FILE: backend/src/api/ApiServer.cpp
+#include "ApiServer.h"
+#include "../models/User.h"
+#include "../models/Listing.h"
+#include "httplib.h"
+#include <sstream>
+#include <regex>
+#include <iostream>
+#include <ctime>
+#include <sqlite3.h>
+#include <iomanip>
+#include <algorithm>
+#include <fstream>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <dirent.h>
+
+// Функція для екранування JSON рядків (підтримує UTF-8)
+static std::string escapeJson(const std::string& str) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < str.length(); ++i) {
+        unsigned char c = static_cast<unsigned char>(str[i]);
+        switch (c) {
+            case '"': oss << "\\\""; break;
+            case '\\': oss << "\\\\"; break;
+            case '\b': oss << "\\b"; break;
+            case '\f': oss << "\\f"; break;
+            case '\n': oss << "\\n"; break;
+            case '\r': oss << "\\r"; break;
+            case '\t': oss << "\\t"; break;
+            default:
+                // Контрольні символи (0x00-0x1F) екрануються як \uXXXX
+                if (c < 0x20) {
+                    oss << "\\u" << std::hex << std::setw(4) << std::setfill('0') 
+                        << static_cast<int>(c);
+                } else {
+                    // Всі інші символи (включаючи UTF-8) додаються як є
+                    oss << c;
+                }
+                break;
+        }
+    }
+    return oss.str();
+}
+
+ApiServer::ApiServer(std::shared_ptr<UserRepository> userRepo,
+                     std::shared_ptr<ListingRepository> listingRepo,
+                     std::shared_ptr<BrandRepository> brandRepo,
+                     std::shared_ptr<ModelRepository> modelRepo,
+                     std::shared_ptr<AuthMiddleware> auth,
+                     int port)
+    : userRepository_(userRepo), listingRepository_(listingRepo),
+      brandRepository_(brandRepo), modelRepository_(modelRepo),
+      authMiddleware_(auth), port_(port), server_(nullptr) {
+    moderationService_ = std::make_shared<ModerationService>();
+    currencyService_ = CurrencyService::getInstance(); // Singleton
+    // StatisticsService потребує Database та ListingRepository
+    auto db = listingRepo->getDb();
+    statisticsService_ = std::make_shared<StatisticsService>(db, listingRepo);
+}
+
+ApiServer::~ApiServer() {
+    stop();
+}
+
+std::string ApiServer::extractAuthToken(const std::string& header) {
+    // Формат: "Bearer token" або "token"
+    if (header.find("Bearer ") == 0) {
+        return header.substr(7);
+    }
+    return header;
+}
+
+std::string ApiServer::handleUploadPhoto(int listingId, const httplib::Request& req, const std::string& authToken) {
+    // Перевірка авторизації
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    // Перевірка, чи оголошення належить користувачу
+    auto listing = listingRepository_->findById(listingId);
+    if (!listing) {
+        return "{\"error\":\"Listing not found\"}";
+    }
+    
+    if (listing->getSellerId() != user->getId()) {
+        return "{\"error\":\"Unauthorized: not your listing\"}";
+    }
+    
+    // Створюємо директорію для фото, якщо її немає
+    std::string uploadDir = "/app/build/uploads/listings/" + std::to_string(listingId);
+    #ifdef _WIN32
+        _mkdir(uploadDir.c_str());
+    #else
+        // Створюємо батьківські директорії рекурсивно
+        std::string dir = "/app/build/uploads";
+        mkdir(dir.c_str(), 0755);
+        dir += "/listings";
+        mkdir(dir.c_str(), 0755);
+        dir += "/" + std::to_string(listingId);
+        mkdir(dir.c_str(), 0755);
+    #endif
+    
+    // Обробка multipart/form-data
+    std::vector<std::string> uploadedFiles;
+    
+    if (req.has_file("photo")) {
+        const auto& file = req.get_file_value("photo");
+        std::string filename = file.filename;
+        
+        // Генеруємо унікальне ім'я файлу
+        time_t now = time(nullptr);
+        std::ostringstream uniqueName;
+        uniqueName << now << "_" << filename;
+        std::string filepath = uploadDir + "/" + uniqueName.str();
+        
+        // Зберігаємо файл
+        std::ofstream outFile(filepath, std::ios::binary);
+        if (outFile.is_open()) {
+            outFile.write(file.content.c_str(), file.content.length());
+            outFile.close();
+            
+            // Додаємо URL до списку завантажених файлів
+            std::string photoUrl = "/uploads/listings/" + std::to_string(listingId) + "/" + uniqueName.str();
+            uploadedFiles.push_back(photoUrl);
+        } else {
+            return "{\"error\":\"Failed to save file\"}";
+        }
+    } else {
+        return "{\"error\":\"No photo file provided\"}";
+    }
+    
+    // Оновлюємо photos в оголошенні
+    std::string currentPhotos = listing->getPhotos();
+    std::vector<std::string> photos;
+    
+    // Парсимо існуючі фото (JSON масив)
+    if (!currentPhotos.empty() && currentPhotos != "[]") {
+        std::regex photoRegex("\"([^\"]+)\"");
+        std::sregex_iterator iter(currentPhotos.begin(), currentPhotos.end(), photoRegex);
+        std::sregex_iterator end;
+        for (; iter != end; ++iter) {
+            photos.push_back((*iter)[1].str());
+        }
+    }
+    
+    // Додаємо нові фото
+    for (const auto& photo : uploadedFiles) {
+        photos.push_back(photo);
+    }
+    
+    // Формуємо JSON масив
+    std::ostringstream photosJson;
+    photosJson << "[";
+    for (size_t i = 0; i < photos.size(); ++i) {
+        if (i > 0) photosJson << ",";
+        photosJson << "\"" << escapeJson(photos[i]) << "\"";
+    }
+    photosJson << "]";
+    
+    // Оновлюємо оголошення
+    listing->setPhotos(photosJson.str());
+    if (listingRepository_->update(std::move(listing))) {
+        std::ostringstream oss;
+        oss << "{\"success\":true,\"message\":\"Photo uploaded\",\"photos\":" << photosJson.str() << "}";
+        return oss.str();
+    }
+    
+    return "{\"error\":\"Failed to update listing\"}";
+}
+
+bool ApiServer::start() {
+    auto* srv = new httplib::Server;
+    server_ = srv;
+    
+    srv->set_default_headers({
+        {"Access-Control-Allow-Origin", "*"},
+        {"Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"},
+        {"Access-Control-Allow-Headers", "Content-Type, Authorization"},
+        {"Content-Type", "application/json; charset=utf-8"}
+    });
+    
+    // Встановлюємо правильне кодування для всіх JSON відповідей
+    srv->set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
+        // Перевіряємо, чи це JSON відповідь
+        if (res.get_header_value("Content-Type").find("application/json") != std::string::npos) {
+            res.set_header("Content-Type", "application/json; charset=utf-8");
+        }
+    });
+    
+    srv->Options(".*", [](const httplib::Request&, httplib::Response& res) {});
+    
+    // Встановлюємо правильне кодування для всіх JSON відповідей
+    srv->set_post_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
+        // Перевіряємо, чи це JSON відповідь
+        std::string contentType = res.get_header_value("Content-Type");
+        if (contentType.find("application/json") != std::string::npos) {
+            res.set_header("Content-Type", "application/json; charset=utf-8");
+        }
+    });
+    
+    // Статичний сервер для фото
+    srv->set_mount_point("/uploads", "/app/build/uploads");
+    
+    // GET /api/listings - отримати всі активні оголошення з фільтрацією та пагінацією
+    srv->Get("/api/listings", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string queryString = "";
+        for (const auto& param : req.params) {
+            if (!queryString.empty()) queryString += "&";
+            queryString += param.first + "=" + param.second;
+        }
+        res.set_content(handleGetListingsFiltered(queryString), "application/json");
+    });
+    
+    // GET /api/listings/my - отримати свої оголошення (потрібна авторизація)
+    srv->Get("/api/listings/my", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        res.set_content(handleGetMyListings(token), "application/json");
+    });
+    
+    // GET /api/listings/{id} - отримати конкретне оголошення
+    srv->Get(R"(/api/listings/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleGetListing(id, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 404;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/listings - створити оголошення
+    srv->Post("/api/listings", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleCreateListing(req.body, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        } else {
+            res.status = 201;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // PUT /api/listings/{id} - оновити оголошення
+    srv->Put(R"(/api/listings/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleUpdateListing(id, req.body, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // DELETE /api/listings/{id} - видалити оголошення
+    srv->Delete(R"(/api/listings/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleDeleteListing(id, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 404;
+        } else {
+            res.status = 204;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/brands - отримати всі марки
+    srv->Get("/api/brands", [this](const httplib::Request&, httplib::Response& res) {
+        res.set_content(handleGetBrands(), "application/json");
+    });
+    
+    // GET /api/brands/{id}/models - отримати моделі марки
+    srv->Get(R"(/api/brands/(\d+)/models)", [this](const httplib::Request& req, httplib::Response& res) {
+        int brandId = std::stoi(req.matches[1]);
+        res.set_content(handleGetModels(brandId), "application/json");
+    });
+    
+    // POST /api/brands/request - запитати додавання марки
+    srv->Post("/api/brands/request", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleRequestBrand(req.body, token);
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/models/request - запитати додавання моделі
+    srv->Post("/api/models/request", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleRequestModel(req.body, token);
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/listings/{id}/stats - статистика (тільки преміум)
+    srv->Get(R"(/api/listings/(\d+)/stats)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleGetListingStats(id, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 403;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/listings/{id}/purchase - створити запит на покупку
+    srv->Post(R"(/api/listings/(\d+)/purchase)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleCreatePurchaseRequest(id, req.body, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        } else {
+            res.status = 201;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/listings/{id}/sold - позначити як продано (тільки продавець)
+    srv->Post(R"(/api/listings/(\d+)/sold)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleMarkAsSold(id, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/listings/{id}/favorite - додати до обраних
+    srv->Post(R"(/api/listings/(\d+)/favorite)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleAddToFavorites(id, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        } else {
+            res.status = 201;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // DELETE /api/listings/{id}/favorite - видалити з обраних
+    srv->Delete(R"(/api/listings/(\d+)/favorite)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleRemoveFromFavorites(id, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/favorites - отримати обрані оголошення
+    srv->Get("/api/favorites", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        res.set_content(handleGetFavorites(token), "application/json");
+    });
+    
+    // POST /api/listings/{id}/comments - додати коментар
+    srv->Post(R"(/api/listings/(\d+)/comments)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleAddComment(id, req.body, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        } else {
+            res.status = 201;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/listings/{id}/comments - отримати коментарі
+    srv->Get(R"(/api/listings/(\d+)/comments)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        res.set_content(handleGetComments(id), "application/json");
+    });
+    
+    // GET /api/notifications - отримати сповіщення
+    srv->Get("/api/notifications", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        res.set_content(handleGetNotifications(token), "application/json");
+    });
+    
+    // POST /api/notifications/{id}/read - позначити сповіщення як прочитане
+    srv->Post(R"(/api/notifications/(\d+)/read)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleMarkNotificationRead(id, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/messages - надіслати повідомлення
+    srv->Post("/api/messages", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleSendMessage(req.body, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        } else {
+            res.status = 201;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/messages - отримати повідомлення
+    srv->Get("/api/messages", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        int otherUserId = 0;
+        if (req.has_param("user_id")) {
+            try { otherUserId = std::stoi(req.get_param_value("user_id")); } catch (...) {}
+        }
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        res.set_content(handleGetMessages(token, otherUserId), "application/json");
+    });
+    
+    // POST /api/messages/{id}/read - позначити повідомлення як прочитане
+    srv->Post(R"(/api/messages/(\d+)/read)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleMarkMessageRead(id, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/admin/listings/pending - отримати оголошення на модерації (адмін/менеджер)
+    srv->Get("/api/admin/listings/pending", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        std::string result = handleGetPendingListings(token);
+        if (result.find("\"error\"") != std::string::npos && result.find("\"Unauthorized\"") != std::string::npos) {
+            res.status = 403;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/admin/listings/{id}/moderate - модерація оголошення
+    srv->Post(R"(/api/admin/listings/(\d+)/moderate)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleModerateListing(id, req.body, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            if (result.find("\"Unauthorized\"") != std::string::npos) {
+                res.status = 403;
+            } else {
+                res.status = 400;
+            }
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/admin/users - отримати всіх користувачів (адмін)
+    srv->Get("/api/admin/users", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        std::string result = handleGetAllUsers(token);
+        if (result.find("\"error\"") != std::string::npos && result.find("\"Unauthorized\"") != std::string::npos) {
+            res.status = 403;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/admin/users/{id}/ban - забанити/розбанити користувача
+    srv->Post(R"(/api/admin/users/(\d+)/ban)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleBanUser(id, req.body, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            if (result.find("\"Unauthorized\"") != std::string::npos) {
+                res.status = 403;
+            } else {
+                res.status = 400;
+            }
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/admin/stats - статистика платформи (адмін)
+    srv->Get("/api/admin/stats", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        std::string result = handleGetPlatformStats(token);
+        if (result.find("\"error\"") != std::string::npos && result.find("\"Unauthorized\"") != std::string::npos) {
+            res.status = 403;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/listings/compare - порівняти оголошення
+    srv->Post("/api/listings/compare", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        std::string result = handleCompareListings(req.body, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        } else {
+            res.status = 201;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/view-history - історія переглядів
+    srv->Get("/api/view-history", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        res.set_content(handleGetViewHistory(token), "application/json");
+    });
+    
+    // POST /api/listings/{id}/view - додати до історії переглядів
+    srv->Post(R"(/api/listings/(\d+)/view)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleAddViewHistory(id, token);
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/recommendations - отримати рекомендації
+    srv->Get("/api/recommendations", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        int listingId = 0;
+        if (req.has_param("listing_id")) {
+            try { listingId = std::stoi(req.get_param_value("listing_id")); } catch (...) {}
+        }
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        res.set_content(handleGetRecommendations(token, listingId), "application/json");
+    });
+    
+    // POST /api/listings/{id}/photos - завантажити фото для оголошення
+    srv->Post(R"(/api/listings/(\d+)/photos)", [this](const httplib::Request& req, httplib::Response& res) {
+        int id = std::stoi(req.matches[1]);
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleUploadPhoto(id, req, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        } else {
+            res.status = 201;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/seller/stats - статистика продавця
+    srv->Get("/api/seller/stats", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        if (token.empty()) {
+            res.status = 401;
+            res.set_content("{\"error\":\"Unauthorized\"}", "application/json");
+            return;
+        }
+        res.set_content(handleGetSellerStats(token), "application/json");
+    });
+    
+    // POST /api/users - реєстрація
+    srv->Post("/api/users", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string result = handleCreateUser(req.body);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 400;
+        } else {
+            res.status = 201;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/users/managers - створити менеджера (тільки адмін)
+    srv->Post("/api/users/managers", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleCreateManager(req.body, token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 403;
+        } else {
+            res.status = 201;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // POST /api/auth/login - логін
+    srv->Post("/api/auth/login", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string result = handleLogin(req.body);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 401;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    // GET /api/auth/me - поточний користувач
+    srv->Get("/api/auth/me", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string token = extractAuthToken(req.get_header_value("Authorization"));
+        std::string result = handleGetCurrentUser(token);
+        if (result.find("\"error\"") != std::string::npos) {
+            res.status = 401;
+        }
+        res.set_content(result, "application/json");
+    });
+    
+    std::cout << "AutoRia API Server starting on port " << port_ << std::endl;
+    return srv->listen("0.0.0.0", port_);
+}
+
+void ApiServer::stop() {
+    if (server_) {
+        auto* srv = static_cast<httplib::Server*>(server_);
+        srv->stop();
+        delete srv;
+        server_ = nullptr;
+    }
+}
+
+std::string ApiServer::handleGetListings(const std::string& query) {
+    auto listings = listingRepository_->findActive();
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < listings.size(); ++i) {
+        if (i > 0) oss << ",";
+        auto seller = userRepository_->findById(listings[i]->getSellerId());
+        std::string json = listings[i]->toJson();
+        if (seller) {
+            // Додаємо інформацію про продавця
+            json.pop_back(); // видаляємо закриваючу дужку
+            json += ",\"seller\":{\"id\":" + std::to_string(seller->getId()) +
+                    ",\"email\":\"" + escapeJson(seller->getEmail()) + "\"" +
+                    ",\"firstName\":\"" + escapeJson(seller->getFirstName()) + "\"" +
+                    ",\"lastName\":\"" + escapeJson(seller->getLastName()) + "\"}}";
+        }
+        oss << json;
+    }
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleGetListingsFiltered(const std::string& queryString) {
+    // Парсимо query параметри
+    std::string searchQuery = "";
+    int brandId = 0;
+    int modelId = 0;
+    double minPrice = 0;
+    double maxPrice = 0;
+    std::string region = "";
+    std::string fuelType = "";
+    std::string transmission = "";
+    std::string sortBy = "created_at";
+    std::string sortOrder = "DESC";
+    int page = 1;
+    int perPage = 10;
+    
+    // Парсимо query string (формат: "key1=value1&key2=value2")
+    if (!queryString.empty()) {
+        std::istringstream iss(queryString);
+        std::string pair;
+        while (std::getline(iss, pair, '&')) {
+            size_t pos = pair.find('=');
+            if (pos != std::string::npos) {
+                std::string key = pair.substr(0, pos);
+                std::string value = pair.substr(pos + 1);
+                
+                if (key == "search") {
+                    searchQuery = value;
+                } else if (key == "brand" || key == "brand_id") {
+                    try { brandId = std::stoi(value); } catch (...) {}
+                } else if (key == "model" || key == "model_id") {
+                    try { modelId = std::stoi(value); } catch (...) {}
+                } else if (key == "min_price") {
+                    try { minPrice = std::stod(value); } catch (...) {}
+                } else if (key == "max_price") {
+                    try { maxPrice = std::stod(value); } catch (...) {}
+                } else if (key == "region") {
+                    region = value;
+                } else if (key == "fuel_type") {
+                    fuelType = value;
+                } else if (key == "transmission") {
+                    transmission = value;
+                } else if (key == "sort") {
+                    sortBy = value;
+                } else if (key == "order") {
+                    sortOrder = value;
+                } else if (key == "page") {
+                    try { page = std::stoi(value); } catch (...) {}
+                } else if (key == "per_page") {
+                    try { perPage = std::stoi(value); } catch (...) {}
+                }
+            }
+        }
+    }
+    
+    int offset = (page - 1) * perPage;
+    
+    // Використовуємо новий метод пошуку та фільтрації
+    auto listings = listingRepository_->searchAndFilter(
+        searchQuery, brandId, modelId, minPrice, maxPrice,
+        region, fuelType, transmission, sortBy, sortOrder,
+        perPage, offset
+    );
+    
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < listings.size(); ++i) {
+        if (i > 0) oss << ",";
+        auto seller = userRepository_->findById(listings[i]->getSellerId());
+        std::string json = listings[i]->toJson();
+        if (seller) {
+            json.pop_back();
+            json += ",\"seller\":{\"id\":" + std::to_string(seller->getId()) +
+                    ",\"email\":\"" + escapeJson(seller->getEmail()) + "\"" +
+                    ",\"firstName\":\"" + escapeJson(seller->getFirstName()) + "\"" +
+                    ",\"lastName\":\"" + escapeJson(seller->getLastName()) + "\"}}";
+        }
+        oss << json;
+    }
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleAddToFavorites(int listingId, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto listing = listingRepository_->findById(listingId);
+    if (!listing) {
+        return "{\"error\":\"Listing not found\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "INSERT OR IGNORE INTO favorites (user_id, listing_id, created_at) VALUES (?, ?, ?)";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, user->getId());
+        sqlite3_bind_int(stmt, 2, listingId);
+        time_t now = time(nullptr);
+        sqlite3_bind_int(stmt, 3, now);
+        
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        
+        if (rc == SQLITE_DONE) {
+            return "{\"success\":true,\"message\":\"Added to favorites\"}";
+        }
+    }
+    
+    return "{\"error\":\"Failed to add to favorites\"}";
+}
+
+std::string ApiServer::handleRemoveFromFavorites(int listingId, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "DELETE FROM favorites WHERE user_id = ? AND listing_id = ?";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, user->getId());
+        sqlite3_bind_int(stmt, 2, listingId);
+        
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        
+        if (rc == SQLITE_DONE) {
+            return "{\"success\":true,\"message\":\"Removed from favorites\"}";
+        }
+    }
+    
+    return "{\"error\":\"Failed to remove from favorites\"}";
+}
+
+std::string ApiServer::handleGetFavorites(const std::string& authToken) {
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "SELECT listing_id FROM favorites WHERE user_id = ?";
+    sqlite3_stmt* stmt;
+    std::vector<int> listingIds;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, user->getId());
+        
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            listingIds.push_back(sqlite3_column_int(stmt, 0));
+        }
+    }
+    sqlite3_finalize(stmt);
+    
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < listingIds.size(); ++i) {
+        auto listing = listingRepository_->findById(listingIds[i]);
+        if (listing) {
+            if (i > 0) oss << ",";
+            auto seller = userRepository_->findById(listing->getSellerId());
+            std::string json = listing->toJson();
+            if (seller) {
+                json.pop_back();
+                json += ",\"seller\":{\"id\":" + std::to_string(seller->getId()) +
+                        ",\"email\":\"" + escapeJson(seller->getEmail()) + "\"" +
+                        ",\"firstName\":\"" + escapeJson(seller->getFirstName()) + "\"" +
+                        ",\"lastName\":\"" + escapeJson(seller->getLastName()) + "\"}}";
+            }
+            oss << json;
+        }
+    }
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleAddComment(int listingId, const std::string& body, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto listing = listingRepository_->findById(listingId);
+    if (!listing) {
+        return "{\"error\":\"Listing not found\"}";
+    }
+    
+    std::regex commentRegex("\"comment_text\"\\s*:\\s*\"([^\"]+)\"");
+    std::smatch match;
+    std::string commentText = "";
+    if (std::regex_search(body, match, commentRegex)) {
+        commentText = match[1];
+    }
+    
+    if (commentText.empty()) {
+        return "{\"error\":\"Comment text is required\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "INSERT INTO comments (listing_id, user_id, comment_text, created_at, is_approved) VALUES (?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, listingId);
+        sqlite3_bind_int(stmt, 2, user->getId());
+        sqlite3_bind_text(stmt, 3, commentText.c_str(), -1, SQLITE_STATIC);
+        time_t now = time(nullptr);
+        sqlite3_bind_int(stmt, 4, now);
+        sqlite3_bind_int(stmt, 5, 1); // Автоматично схвалюємо коментарі
+    
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        
+        if (rc == SQLITE_DONE) {
+            // Створюємо сповіщення для продавця
+            std::ostringstream notifSql;
+            notifSql << "INSERT INTO notifications (user_id, type, message, is_read, created_at) VALUES ("
+                     << listing->getSellerId() << ", 'comment', 'Новий коментар на ваше оголошення', 0, " << now << ")";
+            db->execute(notifSql.str());
+            
+            return "{\"success\":true,\"message\":\"Comment added\"}";
+        }
+    }
+    
+    return "{\"error\":\"Failed to add comment\"}";
+}
+
+std::string ApiServer::handleGetComments(int listingId) {
+    auto db = listingRepository_->getDb();
+    const char* sql = "SELECT id, user_id, comment_text, created_at FROM comments WHERE listing_id = ? AND is_approved = 1 ORDER BY created_at DESC";
+    sqlite3_stmt* stmt;
+    std::ostringstream oss;
+    oss << "[";
+    bool first = true;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, listingId);
+        
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            if (!first) oss << ",";
+            first = false;
+            
+            int commentId = sqlite3_column_int(stmt, 0);
+            int userId = sqlite3_column_int(stmt, 1);
+            const char* commentText = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+            int createdAt = sqlite3_column_int(stmt, 3);
+            
+            auto commentUser = userRepository_->findById(userId);
+            
+            oss << "{\"id\":" << commentId
+                << ",\"userId\":" << userId
+                << ",\"commentText\":\"" << escapeJson(commentText ? commentText : "") << "\""
+                << ",\"createdAt\":" << createdAt;
+            
+            if (commentUser) {
+                oss << ",\"user\":{\"id\":" << commentUser->getId()
+                    << ",\"firstName\":\"" << escapeJson(commentUser->getFirstName()) << "\""
+                    << ",\"lastName\":\"" << escapeJson(commentUser->getLastName()) << "\""
+                    << ",\"email\":\"" << escapeJson(commentUser->getEmail()) << "\"}";
+            }
+            
+            oss << "}";
+        }
+    }
+    sqlite3_finalize(stmt);
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleGetNotifications(const std::string& authToken) {
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "SELECT id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50";
+    sqlite3_stmt* stmt;
+    std::ostringstream oss;
+    oss << "[";
+    bool first = true;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, user->getId());
+        
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            if (!first) oss << ",";
+            first = false;
+            
+            int id = sqlite3_column_int(stmt, 0);
+            const char* type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            const char* message = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+            int isRead = sqlite3_column_int(stmt, 3);
+            int createdAt = sqlite3_column_int(stmt, 4);
+            
+            oss << "{\"id\":" << id
+                << ",\"type\":\"" << escapeJson(type ? type : "") << "\""
+                << ",\"message\":\"" << escapeJson(message ? message : "") << "\""
+                << ",\"isRead\":" << isRead
+                << ",\"createdAt\":" << createdAt << "}";
+        }
+    }
+    sqlite3_finalize(stmt);
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleMarkNotificationRead(int notificationId, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, notificationId);
+        sqlite3_bind_int(stmt, 2, user->getId());
+        
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        
+        if (rc == SQLITE_DONE) {
+            return "{\"success\":true,\"message\":\"Notification marked as read\"}";
+        }
+    }
+    
+    return "{\"error\":\"Failed to update notification\"}";
+}
+
+std::string ApiServer::handleCreatePurchaseRequest(int listingId, const std::string& body, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto listing = listingRepository_->findById(listingId);
+    if (!listing) {
+        return "{\"error\":\"Listing not found\"}";
+    }
+    
+    if (listing->getSellerId() == user->getId()) {
+        return "{\"error\":\"Cannot purchase your own listing\"}";
+    }
+    
+    // Парсинг message
+    std::regex messageRegex("\"message\"\\s*:\\s*\"([^\"]+)\"");
+    std::smatch match;
+    std::string message = "";
+    if (std::regex_search(body, match, messageRegex)) {
+        message = match[1];
+    }
+    
+    // Зберігаємо запит в БД
+    auto db = listingRepository_->getDb();
+    const char* sql = "INSERT INTO purchase_requests (listing_id, buyer_id, seller_id, status, message, created_at) VALUES (?, ?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, listingId);
+        sqlite3_bind_int(stmt, 2, user->getId());
+        sqlite3_bind_int(stmt, 3, listing->getSellerId());
+        sqlite3_bind_text(stmt, 4, "pending", -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 5, message.c_str(), -1, SQLITE_STATIC);
+        time_t now = time(nullptr);
+        sqlite3_bind_int(stmt, 6, now);
+        
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        
+        if (rc == SQLITE_DONE) {
+            return "{\"success\":true,\"message\":\"Purchase request created\"}";
+        }
+    }
+    
+    return "{\"error\":\"Failed to create purchase request\"}";
+}
+
+std::string ApiServer::handleMarkAsSold(int listingId, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto listing = listingRepository_->findById(listingId);
+    if (!listing) {
+        return "{\"error\":\"Listing not found\"}";
+    }
+    
+    if (listing->getSellerId() != user->getId()) {
+        return "{\"error\":\"Only seller can mark as sold\"}";
+    }
+    
+    listing->setStatus("sold");
+    
+    auto listingCopy = std::make_unique<Listing>(listing->getId(), listing->getSellerId(), 
+                                                  listing->getBrandId(), listing->getModelId(),
+                                                  listing->getYear(), listing->getPrice(),
+                                                  listing->getCurrency(), listing->getExchangeRate(),
+                                                  listing->getDescription(), listing->getRegion(),
+                                                  listing->getMileage());
+    listingCopy->setStatus("sold");
+    listingCopy->setPhotos(listing->getPhotos());
+    listingCopy->setFuelType(listing->getFuelType());
+    listingCopy->setTransmission(listing->getTransmission());
+    listingCopy->setColor(listing->getColor());
+    listingCopy->setEngineVolume(listing->getEngineVolume());
+    listingCopy->setBodyType(listing->getBodyType());
+    listingCopy->setDoorsCount(listing->getDoorsCount());
+    listingCopy->setEnginePower(listing->getEnginePower());
+    for (int i = 0; i < listing->getEditCount(); i++) {
+        listingCopy->incrementEditCount();
+    }
+    for (int i = 0; i < listing->getViewCount(); i++) {
+        listingCopy->incrementViewCount();
+    }
+    
+    if (listingRepository_->update(std::move(listingCopy))) {
+        // Створюємо запис в історії цін
+        auto db = listingRepository_->getDb();
+        std::ostringstream priceHistorySql;
+        priceHistorySql << "INSERT INTO price_history (listing_id, price, currency, changed_at) VALUES ("
+                        << listingId << ", " << listing->getPrice() << ", '" << listing->getCurrency() << "', " << time(nullptr) << ")";
+        db->execute(priceHistorySql.str());
+        
+        return "{\"success\":true,\"message\":\"Listing marked as sold\"}";
+    }
+    
+    return "{\"error\":\"Failed to update listing\"}";
+}
+
+std::string ApiServer::handleGetMyListings(const std::string& authToken) {
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto listings = listingRepository_->findBySellerId(user->getId());
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < listings.size(); ++i) {
+        if (i > 0) oss << ",";
+        try {
+            auto seller = userRepository_->findById(listings[i]->getSellerId());
+            std::string json = listings[i]->toJson();
+            if (seller) {
+                // Додаємо інформацію про продавця
+                if (!json.empty() && json.back() == '}') {
+                    json.pop_back(); // видаляємо закриваючу дужку
+                    json += ",\"seller\":{\"id\":" + std::to_string(seller->getId()) +
+                            ",\"email\":\"" + escapeJson(seller->getEmail()) + "\"" +
+                            ",\"firstName\":\"" + escapeJson(seller->getFirstName()) + "\"" +
+                            ",\"lastName\":\"" + escapeJson(seller->getLastName()) + "\"}}";
+                } else {
+                    // Якщо JSON невалідний, пропускаємо цей запис
+                    continue;
+                }
+            }
+            oss << json;
+        } catch (const std::exception& e) {
+            // Пропускаємо помилкові записи
+            continue;
+        }
+    }
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleGetListing(int id, const std::string& authToken) {
+    auto listing = listingRepository_->findById(id);
+    if (!listing) {
+        return "{\"error\":\"Listing not found\"}";
+    }
+    
+    // Реєструємо перегляд
+    listingRepository_->incrementViewCount(id);
+    statisticsService_->recordView(id, 0);
+    
+    auto seller = userRepository_->findById(listing->getSellerId());
+    std::string json = listing->toJson();
+    if (seller) {
+        // Додаємо інформацію про продавця
+        json.pop_back(); // видаляємо закриваючу дужку
+        json += ",\"seller\":{\"id\":" + std::to_string(seller->getId()) +
+                ",\"email\":\"" + seller->getEmail() + "\"" +
+                ",\"firstName\":\"" + escapeJson(seller->getFirstName()) + "\"" +
+                ",\"lastName\":\"" + escapeJson(seller->getLastName()) + "\"}}";
+    }
+    return json;
+    
+    // Якщо користувач авторизований і має преміум - показуємо статистику
+    if (!authToken.empty()) {
+        auto user = authMiddleware_->authenticate(authToken);
+        if (user && user->isPremium() && user->getId() == listing->getSellerId()) {
+            return listing->toJsonWithStats();
+        }
+    }
+    
+    return listing->toJson();
+}
+
+std::string ApiServer::handleCreateListing(const std::string& body, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    if (!authMiddleware_->hasPermission(user.get(), "listings", "create")) {
+        return "{\"error\":\"Permission denied\"}";
+    }
+    
+    // Перевірка ліміту для базового акаунту
+    auto seller = dynamic_cast<Seller*>(user.get());
+    if (seller && !seller->canCreateListing()) {
+        return "{\"error\":\"Basic account limit reached. Upgrade to premium.\"}";
+    }
+    
+    std::string error;
+    if (!validateListingJson(body, error)) {
+        return "{\"error\":\"" + error + "\"}";
+    }
+    
+    // Парсинг JSON
+    std::regex brandRegex("\"brand_id\"\\s*:\\s*(\\d+)");
+    std::regex modelRegex("\"model_id\"\\s*:\\s*(\\d+)");
+    std::regex yearRegex("\"year\"\\s*:\\s*(\\d+)");
+    std::regex priceRegex("\"price\"\\s*:\\s*([\\d.]+)");
+    std::regex currencyRegex("\"currency\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex descRegex("\"description\"\\s*:\\s*\"([^\"]*)\"");
+    std::regex regionRegex("\"region\"\\s*:\\s*\"([^\"]*)\"");
+    std::regex mileageRegex("\"mileage\"\\s*:\\s*(\\d+)");
+    std::regex photosRegex("\"photos\"\\s*:\\s*\\[([^\\]]*)\\]");
+    std::regex fuelTypeRegex("\"fuel_type\"\\s*:\\s*\"([^\"]*)\"");
+    std::regex transmissionRegex("\"transmission\"\\s*:\\s*\"([^\"]*)\"");
+    std::regex colorRegex("\"color\"\\s*:\\s*\"([^\"]*)\"");
+    std::regex engineVolumeRegex("\"engine_volume\"\\s*:\\s*([\\d.]+)");
+    std::regex bodyTypeRegex("\"body_type\"\\s*:\\s*\"([^\"]*)\"");
+    std::regex doorsCountRegex("\"doors_count\"\\s*:\\s*(\\d+)");
+    std::regex enginePowerRegex("\"engine_power\"\\s*:\\s*(\\d+)");
+    
+    std::smatch match;
+    int brandId = 0, modelId = 0, year = 0, mileage = 0, doorsCount = 0, enginePower = 0;
+    double price = 0.0, engineVolume = 0.0;
+    std::string currency = "UAH", description, region, photos = "[]";
+    std::string fuelType, transmission, color, bodyType;
+    
+    if (std::regex_search(body, match, brandRegex)) brandId = std::stoi(match[1]);
+    if (std::regex_search(body, match, modelRegex)) modelId = std::stoi(match[1]);
+    if (std::regex_search(body, match, yearRegex)) year = std::stoi(match[1]);
+    if (std::regex_search(body, match, priceRegex)) price = std::stod(match[1]);
+    if (std::regex_search(body, match, currencyRegex)) currency = match[1];
+    if (std::regex_search(body, match, descRegex)) description = match[1];
+    if (std::regex_search(body, match, regionRegex)) region = match[1];
+    if (std::regex_search(body, match, mileageRegex)) mileage = std::stoi(match[1]);
+    if (std::regex_search(body, match, photosRegex)) {
+        photos = "[" + match[1].str() + "]";
+    }
+    if (std::regex_search(body, match, fuelTypeRegex)) fuelType = match[1];
+    if (std::regex_search(body, match, transmissionRegex)) transmission = match[1];
+    if (std::regex_search(body, match, colorRegex)) color = match[1];
+    if (std::regex_search(body, match, engineVolumeRegex)) engineVolume = std::stod(match[1]);
+    if (std::regex_search(body, match, bodyTypeRegex)) bodyType = match[1];
+    if (std::regex_search(body, match, doorsCountRegex)) doorsCount = std::stoi(match[1]);
+    if (std::regex_search(body, match, enginePowerRegex)) enginePower = std::stoi(match[1]);
+    
+    // Отримуємо курс валют
+    currencyService_->updateRates();
+    auto rates = currencyService_->getCurrentRates();
+    double exchangeRate;
+    if (currency == "USD") {
+        exchangeRate = rates.usdToUah; // USD/UAH
+    } else if (currency == "EUR") {
+        exchangeRate = rates.eurToUah; // EUR/UAH
+    } else {
+        exchangeRate = 1.0; // UAH
+    }
+    
+    // Модерація
+    std::string status = moderationService_->moderateListing(description);
+    // Перевірка, чи статус не порожній
+    if (status.empty()) {
+        status = "active"; // За замовчуванням активне, якщо модерація не повернула статус
+    }
+    
+    auto listing = std::make_unique<Listing>(0, user->getId(), brandId, modelId, year,
+                                             price, currency, exchangeRate,
+                                             description, region, mileage);
+    listing->setStatus(status);
+    listing->setPhotos(photos);
+    listing->setFuelType(fuelType);
+    listing->setTransmission(transmission);
+    listing->setColor(color);
+    listing->setEngineVolume(engineVolume);
+    listing->setBodyType(bodyType);
+    listing->setDoorsCount(doorsCount);
+    listing->setEnginePower(enginePower);
+    
+    if (listingRepository_->create(std::move(listing))) {
+        // Отримуємо ID створеного оголошення
+        auto db = listingRepository_->getDb();
+        sqlite3_int64 lastId = sqlite3_last_insert_rowid(db->getHandle());
+        std::ostringstream oss;
+        oss << "{\"success\":true,\"message\":\"Listing created\",\"id\":" << lastId << "}";
+        return oss.str();
+    }
+    return "{\"error\":\"Failed to create listing\"}";
+}
+
+std::string ApiServer::handleUpdateListing(int id, const std::string& body, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto listing = listingRepository_->findById(id);
+    if (!listing) {
+        return "{\"error\":\"Listing not found\"}";
+    }
+    
+    // Перевірка прав
+    bool canEdit = false;
+    if (listing->getSellerId() == user->getId()) {
+        canEdit = authMiddleware_->hasPermission(user.get(), "listings", "update");
+    } else {
+        canEdit = authMiddleware_->hasPermission(user.get(), "listings", "update_any");
+    }
+    
+    if (!canEdit) {
+        return "{\"error\":\"Permission denied\"}";
+    }
+    
+    if (!listing->canEdit()) {
+        return "{\"error\":\"Edit limit reached (max 3 edits)\"}";
+    }
+    
+    // Парсинг оновлених даних
+    std::regex brandRegex("\"brand_id\"\\s*:\\s*(\\d+)");
+    std::regex modelRegex("\"model_id\"\\s*:\\s*(\\d+)");
+    std::regex yearRegex("\"year\"\\s*:\\s*(\\d+)");
+    std::regex priceRegex("\"price\"\\s*:\\s*([\\d.]+)");
+    std::regex currencyRegex("\"currency\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex descRegex("\"description\"\\s*:\\s*\"([^\"]*)\"");
+    std::regex regionRegex("\"region\"\\s*:\\s*\"([^\"]*)\"");
+    std::regex mileageRegex("\"mileage\"\\s*:\\s*(\\d+)");
+    std::regex photosRegex("\"photos\"\\s*:\\s*\\[([^\\]]*)\\]");
+    std::regex fuelTypeRegex("\"fuel_type\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex transmissionRegex("\"transmission\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex colorRegex("\"color\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex engineVolumeRegex("\"engine_volume\"\\s*:\\s*([\\d.]+)");
+    std::regex bodyTypeRegex("\"body_type\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex doorsCountRegex("\"doors_count\"\\s*:\\s*(\\d+)");
+    std::regex enginePowerRegex("\"engine_power\"\\s*:\\s*(\\d+)");
+    
+    std::smatch match;
+    double oldPrice = listing->getPrice();
+    std::string oldCurrency = listing->getCurrency();
+    
+    // Збираємо нові значення
+    int brandId = listing->getBrandId();
+    int modelId = listing->getModelId();
+    int year = listing->getYear();
+    double price = listing->getPrice();
+    std::string currency = listing->getCurrency();
+    std::string description = listing->getDescription();
+    std::string region = listing->getRegion();
+    int mileage = listing->getMileage();
+    std::string photos = listing->getPhotos();
+    std::string fuelType = listing->getFuelType();
+    std::string transmission = listing->getTransmission();
+    std::string color = listing->getColor();
+    double engineVolume = listing->getEngineVolume();
+    std::string bodyType = listing->getBodyType();
+    int doorsCount = listing->getDoorsCount();
+    int enginePower = listing->getEnginePower();
+    
+    // Оновлюємо значення з body
+    if (std::regex_search(body, match, brandRegex)) brandId = std::stoi(match[1]);
+    if (std::regex_search(body, match, modelRegex)) modelId = std::stoi(match[1]);
+    if (std::regex_search(body, match, yearRegex)) year = std::stoi(match[1]);
+    if (std::regex_search(body, match, priceRegex)) price = std::stod(match[1]);
+    if (std::regex_search(body, match, currencyRegex)) currency = match[1];
+    if (std::regex_search(body, match, descRegex)) description = match[1];
+    if (std::regex_search(body, match, regionRegex)) region = match[1];
+    if (std::regex_search(body, match, mileageRegex)) mileage = std::stoi(match[1]);
+    if (std::regex_search(body, match, photosRegex)) {
+        photos = "[" + match[1].str() + "]";
+    }
+    if (std::regex_search(body, match, fuelTypeRegex)) fuelType = match[1];
+    if (std::regex_search(body, match, transmissionRegex)) transmission = match[1];
+    if (std::regex_search(body, match, colorRegex)) color = match[1];
+    if (std::regex_search(body, match, engineVolumeRegex)) engineVolume = std::stod(match[1]);
+    if (std::regex_search(body, match, bodyTypeRegex)) bodyType = match[1];
+    if (std::regex_search(body, match, doorsCountRegex)) doorsCount = std::stoi(match[1]);
+    if (std::regex_search(body, match, enginePowerRegex)) enginePower = std::stoi(match[1]);
+    
+    // Оновлюємо курс валют якщо валюта змінилась
+    double exchangeRate = listing->getExchangeRate();
+    if (currency != oldCurrency) {
+        currencyService_->updateRates();
+        auto rates = currencyService_->getCurrentRates();
+        if (currency == "USD") {
+            exchangeRate = rates.usdToUah; // USD/UAH
+        } else if (currency == "EUR") {
+            exchangeRate = rates.eurToUah; // EUR/UAH
+        } else {
+            exchangeRate = 1.0; // UAH
+        }
+    }
+    
+    // Модерація нового опису
+    std::string status = moderationService_->moderateListing(description);
+    
+    // Створюємо оновлений об'єкт
+    auto listingCopy = std::make_unique<Listing>(listing->getId(), listing->getSellerId(),
+                                                  brandId, modelId, year, price,
+                                                  currency, exchangeRate,
+                                                  description, region, mileage);
+    listingCopy->setStatus(status);
+    listingCopy->setPhotos(photos);
+    listingCopy->setFuelType(fuelType);
+    listingCopy->setTransmission(transmission);
+    listingCopy->setColor(color);
+    listingCopy->setEngineVolume(engineVolume);
+    listingCopy->setBodyType(bodyType);
+    listingCopy->setDoorsCount(doorsCount);
+    listingCopy->setEnginePower(enginePower);
+    
+    // Зберігаємо editCount та viewCount
+    for (int i = 0; i < listing->getEditCount(); i++) {
+        listingCopy->incrementEditCount();
+    }
+    listingCopy->incrementEditCount(); // Додаємо одне редагування
+    for (int i = 0; i < listing->getViewCount(); i++) {
+        listingCopy->incrementViewCount();
+    }
+    
+    if (listingRepository_->update(std::move(listingCopy))) {
+        // Якщо ціна змінилась, додаємо в історію
+        if (oldPrice != price || oldCurrency != currency) {
+            auto db = listingRepository_->getDb();
+            std::ostringstream priceHistorySql;
+            priceHistorySql << "INSERT INTO price_history (listing_id, price, currency, changed_at) VALUES ("
+                            << id << ", " << price << ", '" << currency << "', " << time(nullptr) << ")";
+            db->execute(priceHistorySql.str());
+        }
+        
+        return "{\"success\":true}";
+    }
+    return "{\"error\":\"Failed to update\"}";
+}
+
+std::string ApiServer::handleDeleteListing(int id, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto listing = listingRepository_->findById(id);
+    if (!listing) {
+        return "{\"error\":\"Not found\"}";
+    }
+    
+    bool canDelete = false;
+    if (listing->getSellerId() == user->getId()) {
+        canDelete = authMiddleware_->hasPermission(user.get(), "listings", "delete");
+    } else {
+        canDelete = authMiddleware_->hasPermission(user.get(), "listings", "delete_any");
+    }
+    
+    if (!canDelete) {
+        return "{\"error\":\"Permission denied\"}";
+    }
+    
+    if (listingRepository_->deleteListing(id)) {
+        return "{\"success\":true}";
+    }
+    return "{\"error\":\"Failed to delete\"}";
+}
+
+std::string ApiServer::handleGetBrands() {
+    auto brands = brandRepository_->getAll();
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < brands.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << brands[i]->toJson();
+    }
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleGetModels(int brandId) {
+    auto models = modelRepository_->getByBrandId(brandId);
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < models.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << models[i]->toJson();
+    }
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleRequestBrand(const std::string& body, const std::string& authToken) {
+    // Мокована реалізація
+    return "{\"success\":true,\"message\":\"Request submitted\"}";
+}
+
+std::string ApiServer::handleRequestModel(const std::string& body, const std::string& authToken) {
+    // Мокована реалізація
+    return "{\"success\":true,\"message\":\"Request submitted\"}";
+}
+
+std::string ApiServer::handleGetListingStats(int id, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user || !user->isPremium()) {
+        return "{\"error\":\"Premium account required\"}";
+    }
+    
+    auto listing = listingRepository_->findById(id);
+    if (!listing || listing->getSellerId() != user->getId()) {
+        return "{\"error\":\"Listing not found or access denied\"}";
+    }
+    
+    auto stats = statisticsService_->getListingStatistics(id, listing->getRegion());
+    std::ostringstream oss;
+    oss << "{\"listingId\":" << id
+        << ",\"totalViews\":" << stats.totalViews
+        << ",\"viewsPerDay\":" << stats.viewsPerDay
+        << ",\"viewsPerWeek\":" << stats.viewsPerWeek
+        << ",\"viewsPerMonth\":" << stats.viewsPerMonth
+        << ",\"averagePriceByRegion\":" << stats.averagePriceByRegion
+        << ",\"averagePriceByUkraine\":" << stats.averagePriceByUkraine
+        << "}";
+    return oss.str();
+}
+
+std::string ApiServer::handleGetSellerStats(const std::string& authToken) {
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto stats = statisticsService_->getSellerStatistics(user->getId());
+    std::ostringstream oss;
+    oss << "{\"sellerId\":" << user->getId()
+        << ",\"totalListings\":" << stats.totalListings
+        << ",\"activeListings\":" << stats.activeListings
+        << ",\"soldListings\":" << stats.soldListings
+        << ",\"totalViews\":" << stats.totalViews
+        << ",\"averagePrice\":" << std::fixed << std::setprecision(2) << stats.averagePrice
+        << ",\"viewsByDay\":[";
+    
+    for (size_t i = 0; i < stats.viewsByDay.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << "{\"date\":" << stats.viewsByDay[i].first
+            << ",\"views\":" << stats.viewsByDay[i].second << "}";
+    }
+    
+    oss << "],\"popularListings\":[";
+    for (size_t i = 0; i < stats.popularListings.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << "{\"name\":\"" << escapeJson(stats.popularListings[i].first) << "\""
+            << ",\"views\":" << stats.popularListings[i].second << "}";
+    }
+    
+    oss << "]}";
+    return oss.str();
+}
+
+std::string ApiServer::handleCreateUser(const std::string& body) {
+    // Парсинг JSON
+    std::regex emailRegex("\"email\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex passwordRegex("\"password\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex firstNameRegex("\"firstName\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex lastNameRegex("\"lastName\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex roleRegex("\"role\"\\s*:\\s*\"([^\"]+)\"");
+    
+    std::smatch match;
+    std::string email, password, firstName, lastName, role = "buyer";
+    
+    if (std::regex_search(body, match, emailRegex)) email = match[1];
+    if (std::regex_search(body, match, passwordRegex)) password = match[1];
+    if (std::regex_search(body, match, firstNameRegex)) firstName = match[1];
+    if (std::regex_search(body, match, lastNameRegex)) lastName = match[1];
+    if (std::regex_search(body, match, roleRegex)) role = match[1];
+    
+    if (email.empty() || password.empty()) {
+        return "{\"error\":\"Email and password required\"}";
+    }
+    
+    // Перевірка чи користувач вже існує
+    auto existing = userRepository_->findByEmail(email);
+    if (existing) {
+        return "{\"error\":\"User already exists\"}";
+    }
+    
+    // Створення користувача (моковано - в реальності хешування пароля)
+    std::string passwordHash = "hashed_" + password;
+    std::unique_ptr<User> user;
+    
+    if (role == "seller") {
+        user = std::make_unique<Seller>(0, email, passwordHash, firstName, lastName, "", "basic");
+    } else if (role == "administrator") {
+        user = std::make_unique<Administrator>(0, email, passwordHash, firstName, lastName, "");
+    } else {
+        user = std::make_unique<Buyer>(0, email, passwordHash, firstName, lastName, "");
+    }
+    
+    if (userRepository_->create(std::move(user))) {
+        auto newUser = userRepository_->findByEmail(email);
+        if (newUser) {
+            std::ostringstream oss;
+            oss << "{\"success\":true,\"userId\":" << newUser->getId()
+                << ",\"token\":\"" << newUser->getId() << ":" << email << "\"}";
+            return oss.str();
+        }
+    }
+    
+    return "{\"error\":\"Failed to create user\"}";
+}
+
+std::string ApiServer::handleLogin(const std::string& body) {
+    // Парсинг JSON
+    std::regex emailRegex("\"email\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex passwordRegex("\"password\"\\s*:\\s*\"([^\"]+)\"");
+    
+    std::smatch match;
+    std::string email, password;
+    
+    if (std::regex_search(body, match, emailRegex)) email = match[1];
+    if (std::regex_search(body, match, passwordRegex)) password = match[1];
+    
+    if (email.empty() || password.empty()) {
+        return "{\"error\":\"Email and password required\"}";
+    }
+    
+    auto user = userRepository_->findByEmail(email);
+    if (!user) {
+        return "{\"error\":\"Invalid credentials\"}";
+    }
+    
+    // Мокована перевірка пароля (в реальності порівняння хешів)
+    // Для демонстрації приймаємо будь-який пароль
+    
+    std::ostringstream oss;
+    auto roles = user->getRoles();
+    oss << "{\"success\":true,\"token\":\"" << user->getId() << ":" << email << "\""
+        << ",\"user\":{\"id\":" << user->getId()
+        << ",\"email\":\"" << email << "\""
+        << ",\"firstName\":\"" << user->getFirstName() << "\""
+        << ",\"lastName\":\"" << user->getLastName() << "\""
+        << ",\"accountType\":\"" << user->getAccountType() << "\""
+        << ",\"roles\":[";
+    for (size_t i = 0; i < roles.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << "\"" << roles[i] << "\"";
+    }
+    oss << "]}}";
+    return oss.str();
+}
+
+std::string ApiServer::handleGetCurrentUser(const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    std::ostringstream oss;
+    auto roles = user->getRoles();
+    oss << "{\"id\":" << user->getId()
+        << ",\"email\":\"" << user->getEmail() << "\""
+        << ",\"firstName\":\"" << user->getFirstName() << "\""
+        << ",\"lastName\":\"" << user->getLastName() << "\""
+        << ",\"accountType\":\"" << user->getAccountType() << "\""
+        << ",\"roles\":[";
+    for (size_t i = 0; i < roles.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << "\"" << roles[i] << "\"";
+    }
+    oss << "]}";
+    return oss.str();
+}
+
+std::string ApiServer::handleCreateManager(const std::string& body, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user || !authMiddleware_->hasRole(user.get(), "administrator")) {
+        return "{\"error\":\"Only administrators can create managers\"}";
+    }
+    
+    return "{\"success\":true,\"userId\":2}";
+}
+
+bool ApiServer::validateListingJson(const std::string& json, std::string& error) {
+    if (json.empty()) {
+        error = "Empty request body";
+        return false;
+    }
+    
+    if (json.find("brand_id") == std::string::npos) {
+        error = "Missing brand_id";
+        return false;
+    }
+    if (json.find("model_id") == std::string::npos) {
+        error = "Missing model_id";
+        return false;
+    }
+    if (json.find("year") == std::string::npos) {
+        error = "Missing year";
+        return false;
+    }
+    if (json.find("price") == std::string::npos) {
+        error = "Missing price";
+        return false;
+    }
+    
+    return true;
+}
+
+// Повідомлення
+std::string ApiServer::handleSendMessage(const std::string& body, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    std::regex receiverRegex("\"receiver_id\"\\s*:\\s*(\\d+)");
+    std::regex messageRegex("\"message_text\"\\s*:\\s*\"([^\"]+)\"");
+    std::regex listingRegex("\"listing_id\"\\s*:\\s*(\\d+)");
+    std::smatch match;
+    
+    int receiverId = 0;
+    int listingId = 0;
+    std::string messageText = "";
+    
+    if (std::regex_search(body, match, receiverRegex)) {
+        receiverId = std::stoi(match[1]);
+    }
+    if (std::regex_search(body, match, messageRegex)) {
+        messageText = match[1];
+    }
+    if (std::regex_search(body, match, listingRegex)) {
+        listingId = std::stoi(match[1]);
+    }
+    
+    if (receiverId == 0 || messageText.empty()) {
+        return "{\"error\":\"Missing receiver_id or message_text\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "INSERT INTO messages (sender_id, receiver_id, listing_id, message_text, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, user->getId());
+        sqlite3_bind_int(stmt, 2, receiverId);
+        if (listingId > 0) {
+            sqlite3_bind_int(stmt, 3, listingId);
+        } else {
+            sqlite3_bind_null(stmt, 3);
+        }
+        sqlite3_bind_text(stmt, 4, messageText.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 5, 0);
+        time_t now = time(nullptr);
+        sqlite3_bind_int(stmt, 6, now);
+        
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        
+        if (rc == SQLITE_DONE) {
+            // Створюємо сповіщення для отримувача
+            std::ostringstream notifSql;
+            notifSql << "INSERT INTO notifications (user_id, type, message, is_read, created_at) VALUES ("
+                     << receiverId << ", 'message', 'Нове повідомлення від " << escapeJson(user->getFirstName()) << "', 0, " << now << ")";
+            db->execute(notifSql.str());
+            
+            return "{\"success\":true,\"message\":\"Message sent\"}";
+        }
+    }
+    
+    return "{\"error\":\"Failed to send message\"}";
+}
+
+std::string ApiServer::handleGetMessages(const std::string& authToken, int otherUserId) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    std::ostringstream sql;
+    sqlite3_stmt* stmt;
+    
+    if (otherUserId > 0) {
+        // Отримати повідомлення з конкретним користувачем
+        sql << "SELECT * FROM messages WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?) ORDER BY created_at ASC";
+        const std::string sqlStr = sql.str();
+        if (sqlite3_prepare_v2(db->getHandle(), sqlStr.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, user->getId());
+            sqlite3_bind_int(stmt, 2, otherUserId);
+            sqlite3_bind_int(stmt, 3, otherUserId);
+            sqlite3_bind_int(stmt, 4, user->getId());
+        }
+    } else {
+        // Отримати всі повідомлення користувача (список розмов)
+        sql << "SELECT DISTINCT CASE WHEN sender_id = ? THEN receiver_id ELSE sender_id END as other_user_id FROM messages WHERE sender_id = ? OR receiver_id = ?";
+        const std::string sqlStr = sql.str();
+        if (sqlite3_prepare_v2(db->getHandle(), sqlStr.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, user->getId());
+            sqlite3_bind_int(stmt, 2, user->getId());
+            sqlite3_bind_int(stmt, 3, user->getId());
+        }
+    }
+    
+    std::ostringstream oss;
+    oss << "[";
+    bool first = true;
+    
+    if (stmt) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            if (!first) oss << ",";
+            first = false;
+            
+            if (otherUserId > 0) {
+                // Повертаємо повідомлення
+                int msgId = sqlite3_column_int(stmt, 0);
+                int senderId = sqlite3_column_int(stmt, 1);
+                int receiverId = sqlite3_column_int(stmt, 2);
+                int listingId = sqlite3_column_int(stmt, 3);
+                const char* messageText = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+                int isRead = sqlite3_column_int(stmt, 5);
+                int createdAt = sqlite3_column_int(stmt, 6);
+                
+                auto sender = userRepository_->findById(senderId);
+                
+                oss << "{\"id\":" << msgId
+                    << ",\"senderId\":" << senderId
+                    << ",\"receiverId\":" << receiverId
+                    << ",\"messageText\":\"" << escapeJson(messageText ? messageText : "") << "\""
+                    << ",\"isRead\":" << isRead
+                    << ",\"createdAt\":" << createdAt;
+                
+                if (listingId > 0) {
+                    oss << ",\"listingId\":" << listingId;
+                }
+                
+                if (sender) {
+                    oss << ",\"sender\":{\"id\":" << sender->getId()
+                        << ",\"firstName\":\"" << escapeJson(sender->getFirstName()) << "\""
+                        << ",\"lastName\":\"" << escapeJson(sender->getLastName()) << "\"}}";
+                } else {
+                    oss << "}";
+                }
+            } else {
+                // Повертаємо список розмов
+                int otherUserId = sqlite3_column_int(stmt, 0);
+                auto otherUser = userRepository_->findById(otherUserId);
+                if (otherUser) {
+                    oss << "{\"userId\":" << otherUserId
+                        << ",\"firstName\":\"" << escapeJson(otherUser->getFirstName()) << "\""
+                        << ",\"lastName\":\"" << escapeJson(otherUser->getLastName()) << "\"}";
+                }
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+    
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleMarkMessageRead(int messageId, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "UPDATE messages SET is_read = 1 WHERE id = ? AND receiver_id = ?";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, messageId);
+        sqlite3_bind_int(stmt, 2, user->getId());
+        
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        
+        if (rc == SQLITE_DONE) {
+            return "{\"success\":true}";
+        }
+    }
+    
+    return "{\"error\":\"Failed to mark as read\"}";
+}
+
+// Адмін панель
+std::string ApiServer::handleGetPendingListings(const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    if (!authMiddleware_->hasPermission(user.get(), "listings", "moderate")) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto listings = listingRepository_->findByStatus("pending");
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < listings.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << listings[i]->toJson();
+    }
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleModerateListing(int listingId, const std::string& body, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    if (!authMiddleware_->hasPermission(user.get(), "listings", "moderate")) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    std::regex statusRegex("\"status\"\\s*:\\s*\"([^\"]+)\"");
+    std::smatch match;
+    std::string status = "pending";
+    
+    if (std::regex_search(body, match, statusRegex)) {
+        status = match[1];
+    }
+    
+    if (status != "active" && status != "rejected") {
+        return "{\"error\":\"Invalid status\"}";
+    }
+    
+    auto listing = listingRepository_->findById(listingId);
+    if (!listing) {
+        return "{\"error\":\"Listing not found\"}";
+    }
+    
+    listing->setStatus(status);
+    time_t now = time(nullptr);
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "UPDATE listings SET status = ?, last_moderation_date = ? WHERE id = ?";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, status.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 2, now);
+        sqlite3_bind_int(stmt, 3, listingId);
+        
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        
+        if (rc == SQLITE_DONE) {
+            // Створюємо сповіщення для продавця
+            std::ostringstream notifSql;
+            std::string message = status == "active" ? "Ваше оголошення схвалено" : "Ваше оголошення відхилено";
+            notifSql << "INSERT INTO notifications (user_id, type, message, is_read, created_at) VALUES ("
+                     << listing->getSellerId() << ", 'moderation', '" << message << "', 0, " << now << ")";
+            db->execute(notifSql.str());
+            
+            return "{\"success\":true}";
+        }
+    }
+    
+    return "{\"error\":\"Failed to moderate\"}";
+}
+
+std::string ApiServer::handleGetAllUsers(const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    if (!authMiddleware_->hasPermission(user.get(), "users", "manage_all")) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    // Отримуємо всіх користувачів через UserRepository
+    // Припускаємо, що є метод getAll() або подібний
+    std::ostringstream oss;
+    oss << "[{\"message\":\"Not fully implemented - need getAll() method in UserRepository\"}]";
+    return oss.str();
+}
+
+std::string ApiServer::handleBanUser(int userId, const std::string& body, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    if (!authMiddleware_->hasPermission(user.get(), "users", "ban")) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    std::regex banRegex("\"ban\"\\s*:\\s*(true|false)");
+    std::smatch match;
+    bool ban = true;
+    
+    if (std::regex_search(body, match, banRegex)) {
+        ban = (match[1] == "true");
+    }
+    
+    auto targetUser = userRepository_->findById(userId);
+    if (!targetUser) {
+        return "{\"error\":\"User not found\"}";
+    }
+    
+    targetUser->setActive(!ban);
+    
+    // Оновлюємо в БД
+    auto db = userRepository_->getDb();
+    const char* sql = "UPDATE users SET is_active = ? WHERE id = ?";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, ban ? 0 : 1);
+        sqlite3_bind_int(stmt, 2, userId);
+        
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        
+        if (rc == SQLITE_DONE) {
+            return "{\"success\":true}";
+        }
+    }
+    
+    return "{\"error\":\"Failed to ban/unban user\"}";
+}
+
+std::string ApiServer::handleGetPlatformStats(const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    if (!authMiddleware_->hasPermission(user.get(), "system", "statistics")) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    std::ostringstream oss;
+    
+    // Отримуємо статистику
+    const char* sql = "SELECT COUNT(*) FROM users";
+    sqlite3_stmt* stmt;
+    int userCount = 0;
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            userCount = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+    
+    sql = "SELECT COUNT(*) FROM listings";
+    int listingCount = 0;
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            listingCount = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+    
+    sql = "SELECT COUNT(*) FROM listings WHERE status = 'active'";
+    int activeListingCount = 0;
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            activeListingCount = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+    
+    oss << "{\"userCount\":" << userCount
+        << ",\"listingCount\":" << listingCount
+        << ",\"activeListingCount\":" << activeListingCount << "}";
+    
+    return oss.str();
+}
+
+// Порівняння оголошень
+std::string ApiServer::handleCompareListings(const std::string& body, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    std::regex idsRegex("\"listing_ids\"\\s*:\\s*\\[([^\\]]+)\\]");
+    std::smatch match;
+    std::vector<int> listingIds;
+    
+    if (std::regex_search(body, match, idsRegex)) {
+        std::string idsStr = match[1];
+        std::istringstream iss(idsStr);
+        std::string id;
+        while (std::getline(iss, id, ',')) {
+            try {
+                listingIds.push_back(std::stoi(id));
+            } catch (...) {}
+        }
+    }
+    
+    if (listingIds.empty() || listingIds.size() > 5) {
+        return "{\"error\":\"Invalid listing_ids (1-5 listings allowed)\"}";
+    }
+    
+    std::ostringstream idsJson;
+    idsJson << "[";
+    for (size_t i = 0; i < listingIds.size(); ++i) {
+        if (i > 0) idsJson << ",";
+        idsJson << listingIds[i];
+    }
+    idsJson << "]";
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "INSERT INTO listing_comparisons (user_id, listing_ids, created_at) VALUES (?, ?, ?)";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, user->getId());
+        std::string idsStr = idsJson.str();
+        sqlite3_bind_text(stmt, 2, idsStr.c_str(), -1, SQLITE_STATIC);
+        time_t now = time(nullptr);
+        sqlite3_bind_int(stmt, 3, now);
+        
+        int rc = sqlite3_step(stmt);
+        int comparisonId = static_cast<int>(sqlite3_last_insert_rowid(db->getHandle()));
+        sqlite3_finalize(stmt);
+        
+        if (rc == SQLITE_DONE) {
+            // Повертаємо порівняння
+            std::ostringstream oss;
+            oss << "{\"id\":" << comparisonId << ",\"listingIds\":" << idsStr << ",\"listings\":[";
+            for (size_t i = 0; i < listingIds.size(); ++i) {
+                if (i > 0) oss << ",";
+                auto listing = listingRepository_->findById(listingIds[i]);
+                if (listing) {
+                    oss << listing->toJson();
+                }
+            }
+            oss << "]}";
+            return oss.str();
+        }
+    }
+    
+    return "{\"error\":\"Failed to create comparison\"}";
+}
+
+std::string ApiServer::handleGetComparison(int comparisonId, const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "SELECT listing_ids FROM listing_comparisons WHERE id = ? AND user_id = ?";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, comparisonId);
+        sqlite3_bind_int(stmt, 2, user->getId());
+        
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char* idsStr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            sqlite3_finalize(stmt);
+            
+            // Парсимо JSON масив ID
+            std::string ids = idsStr ? idsStr : "[]";
+            // Простий парсинг (в реальності потрібен JSON парсер)
+            std::ostringstream oss;
+            oss << "{\"id\":" << comparisonId << ",\"listingIds\":" << ids << "}";
+            return oss.str();
+        }
+        sqlite3_finalize(stmt);
+    }
+    
+    return "{\"error\":\"Comparison not found\"}";
+}
+
+// Історія переглядів
+std::string ApiServer::handleGetViewHistory(const std::string& authToken) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    auto db = listingRepository_->getDb();
+    const char* sql = "SELECT listing_id, viewed_at FROM listing_views WHERE user_id = ? ORDER BY viewed_at DESC LIMIT 50";
+    sqlite3_stmt* stmt;
+    std::ostringstream oss;
+    oss << "[";
+    bool first = true;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, user->getId());
+        
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            if (!first) oss << ",";
+            first = false;
+            
+            int listingId = sqlite3_column_int(stmt, 0);
+            int viewedAt = sqlite3_column_int(stmt, 1);
+            
+            auto listing = listingRepository_->findById(listingId);
+            if (listing) {
+                oss << listing->toJson();
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+    
+    oss << "]";
+    return oss.str();
+}
+
+std::string ApiServer::handleAddViewHistory(int listingId, const std::string& authToken) {
+    auto db = listingRepository_->getDb();
+    
+    int userId = 0;
+    if (!authToken.empty()) {
+        auto user = authMiddleware_->authenticate(authToken);
+        if (user) {
+            userId = user->getId();
+        }
+    }
+    
+    const char* sql = "INSERT INTO listing_views (listing_id, user_id, viewed_at) VALUES (?, ?, ?)";
+    sqlite3_stmt* stmt;
+    
+    if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, listingId);
+        if (userId > 0) {
+            sqlite3_bind_int(stmt, 2, userId);
+        } else {
+            sqlite3_bind_null(stmt, 2);
+        }
+        time_t now = time(nullptr);
+        sqlite3_bind_int(stmt, 3, now);
+        
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        
+        // Оновлюємо view_count в listings
+        listingRepository_->incrementViewCount(listingId);
+    }
+    
+    return "{\"success\":true}";
+}
+
+// Рекомендації
+std::string ApiServer::handleGetRecommendations(const std::string& authToken, int listingId) {
+    if (authToken.empty()) {
+        return "{\"error\":\"Unauthorized\"}";
+    }
+    
+    auto user = authMiddleware_->authenticate(authToken);
+    if (!user) {
+        return "{\"error\":\"Invalid token\"}";
+    }
+    
+    std::vector<std::unique_ptr<Listing>> recommendations;
+    
+    if (listingId > 0) {
+        // Схожі оголошення на основі поточного
+        auto listing = listingRepository_->findById(listingId);
+        if (listing) {
+            // Знаходимо оголошення з тією ж маркою/моделлю
+            recommendations = listingRepository_->searchAndFilter(
+                "", listing->getBrandId(), listing->getModelId(), 0, 0,
+                "", "", "", "created_at", "DESC", 5, 0
+            );
+            // Видаляємо поточне оголошення
+            recommendations.erase(
+                std::remove_if(recommendations.begin(), recommendations.end(),
+                    [listingId](const std::unique_ptr<Listing>& l) { return l->getId() == listingId; }),
+                recommendations.end()
+            );
+        }
+    } else {
+        // Персональні рекомендації на основі історії переглядів
+        auto db = listingRepository_->getDb();
+        const char* sql = "SELECT listing_id FROM listing_views WHERE user_id = ? ORDER BY viewed_at DESC LIMIT 5";
+        sqlite3_stmt* stmt;
+        std::vector<int> viewedBrandIds;
+        
+        if (sqlite3_prepare_v2(db->getHandle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, user->getId());
+            
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                int viewedListingId = sqlite3_column_int(stmt, 0);
+                auto viewedListing = listingRepository_->findById(viewedListingId);
+                if (viewedListing) {
+                    viewedBrandIds.push_back(viewedListing->getBrandId());
+                }
+            }
+            sqlite3_finalize(stmt);
+        }
+        
+        if (!viewedBrandIds.empty()) {
+            // Знаходимо оголошення з популярними марками
+            int popularBrandId = viewedBrandIds[0];
+            recommendations = listingRepository_->searchAndFilter(
+                "", popularBrandId, 0, 0, 0,
+                "", "", "", "view_count", "DESC", 5, 0
+            );
+        }
+    }
+    
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < recommendations.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << recommendations[i]->toJson();
+    }
+    oss << "]";
+    return oss.str();
+}
+

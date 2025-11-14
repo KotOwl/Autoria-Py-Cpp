@@ -1,0 +1,433 @@
+<!-- FILE: frontend/templates/index.html -->
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoRia Clone</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .navbar {
+            background: white;
+            padding: 15px 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .navbar h1 {
+            color: #667eea;
+            font-size: 24px;
+        }
+        .nav-buttons {
+            display: flex;
+            gap: 10px;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+        .listing {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        .listing h3 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .listing p {
+            color: #666;
+            margin: 5px 0;
+        }
+        .premium-badge {
+            background: gold;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            display: inline-block;
+            margin-left: 10px;
+        }
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .profile-link {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .profile-link:hover {
+            text-decoration: underline;
+        }
+        .empty-state {
+            background: white;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            color: #666;
+        }
+        .filters {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        .filters h3 {
+            margin-bottom: 15px;
+            color: #333;
+        }
+        .filter-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+        }
+        .filter-group label {
+            margin-bottom: 5px;
+            color: #666;
+            font-size: 14px;
+        }
+        .filter-group input,
+        .filter-group select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        .pagination a,
+        .pagination span {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            text-decoration: none;
+            color: #333;
+            background: white;
+        }
+        .pagination .active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        .search-box {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        .search-box input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        .sort-options {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        .sort-options label {
+            color: #666;
+            font-weight: 500;
+        }
+        .sort-options select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1><a href="/" style="color: #667eea; text-decoration: none;">🚗 AutoRia Clone</a></h1>
+        {% if user %}
+        <div class="user-info">
+                <a href="/create-listing" class="btn btn-primary">Створити оголошення</a>
+                <a href="/favorites" class="profile-link">⭐ Обрані</a>
+                <a href="/notifications" class="profile-link">🔔 Сповіщення</a>
+                <a href="/seller/stats" class="profile-link">📊 Статистика</a>
+                <a href="/profile" class="profile-link">{{ user.firstName }} {{ user.lastName }}</a>
+            <a href="/logout" class="btn btn-secondary">Вихід</a>
+        </div>
+        {% else %}
+        <div class="nav-buttons">
+            <a href="/login" class="btn btn-primary">Вхід</a>
+            <a href="/register" class="btn btn-secondary">Реєстрація</a>
+        </div>
+        {% endif %}
+    </nav>
+
+    <div class="container">
+        <div class="search-box">
+            <form method="GET" action="/">
+                <input type="text" name="search" value="{{ request.args.get('search', '') }}" placeholder="Пошук за назвою, описом...">
+                <input type="hidden" name="brand" value="{{ brand_filter or '' }}">
+                <input type="hidden" name="min_price" value="{{ min_price or '' }}">
+                <input type="hidden" name="max_price" value="{{ max_price or '' }}">
+                <input type="hidden" name="region" value="{{ region_filter or '' }}">
+            </form>
+        </div>
+        
+        <div class="sort-options">
+            <label>Сортувати:</label>
+            <select onchange="window.location.href=updateUrlParam('sort', this.value)">
+                <option value="">За замовчуванням</option>
+                <option value="price_asc" {% if request.args.get('sort') == 'price_asc' %}selected{% endif %}>Ціна: від найдешевших</option>
+                <option value="price_desc" {% if request.args.get('sort') == 'price_desc' %}selected{% endif %}>Ціна: від найдорожчих</option>
+                <option value="year_desc" {% if request.args.get('sort') == 'year_desc' %}selected{% endif %}>Рік: новіші</option>
+                <option value="year_asc" {% if request.args.get('sort') == 'year_asc' %}selected{% endif %}>Рік: старіші</option>
+                <option value="mileage_asc" {% if request.args.get('sort') == 'mileage_asc' %}selected{% endif %}>Пробіг: менший</option>
+                <option value="mileage_desc" {% if request.args.get('sort') == 'mileage_desc' %}selected{% endif %}>Пробіг: більший</option>
+                <option value="date_desc" {% if request.args.get('sort') == 'date_desc' %}selected{% endif %}>Дата: новіші</option>
+            </select>
+        </div>
+        
+        <div class="filters">
+            <h3>Фільтри</h3>
+            <form method="GET" action="/">
+                <input type="hidden" name="search" value="{{ request.args.get('search', '') }}">
+                <input type="hidden" name="sort" value="{{ request.args.get('sort', '') }}">
+                <div class="filter-row">
+                    <div class="filter-group">
+                        <label>Марка</label>
+                        <select name="brand">
+                            <option value="">Всі марки</option>
+                            {% for brand in brands %}
+                            <option value="{{ brand.id }}" {% if brand_filter == brand.id|string %}selected{% endif %}>
+                                {{ brand.name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Мінімальна ціна</label>
+                        <input type="number" name="min_price" value="{{ min_price or '' }}" placeholder="0">
+                    </div>
+                    <div class="filter-group">
+                        <label>Максимальна ціна</label>
+                        <input type="number" name="max_price" value="{{ max_price or '' }}" placeholder="1000000">
+                    </div>
+                    <div class="filter-group">
+                        <label>Регіон</label>
+                        <select name="region">
+                            <option value="">Всі регіони</option>
+                            <option value="Київ" {% if region_filter == 'Київ' %}selected{% endif %}>Київ</option>
+                            <option value="Київська область" {% if region_filter == 'Київська область' %}selected{% endif %}>Київська область</option>
+                            <option value="Львів" {% if region_filter == 'Львів' %}selected{% endif %}>Львів</option>
+                            <option value="Львівська область" {% if region_filter == 'Львівська область' %}selected{% endif %}>Львівська область</option>
+                            <option value="Одеса" {% if region_filter == 'Одеса' %}selected{% endif %}>Одеса</option>
+                            <option value="Одеська область" {% if region_filter == 'Одеська область' %}selected{% endif %}>Одеська область</option>
+                            <option value="Харків" {% if region_filter == 'Харків' %}selected{% endif %}>Харків</option>
+                            <option value="Харківська область" {% if region_filter == 'Харківська область' %}selected{% endif %}>Харківська область</option>
+                            <option value="Дніпро" {% if region_filter == 'Дніпро' %}selected{% endif %}>Дніпро</option>
+                            <option value="Дніпропетровська область" {% if region_filter == 'Дніпропетровська область' %}selected{% endif %}>Дніпропетровська область</option>
+                            <option value="Запоріжжя" {% if region_filter == 'Запоріжжя' %}selected{% endif %}>Запоріжжя</option>
+                            <option value="Запорізька область" {% if region_filter == 'Запорізька область' %}selected{% endif %}>Запорізька область</option>
+                            <option value="Вінниця" {% if region_filter == 'Вінниця' %}selected{% endif %}>Вінниця</option>
+                            <option value="Вінницька область" {% if region_filter == 'Вінницька область' %}selected{% endif %}>Вінницька область</option>
+                            <option value="Житомир" {% if region_filter == 'Житомир' %}selected{% endif %}>Житомир</option>
+                            <option value="Житомирська область" {% if region_filter == 'Житомирська область' %}selected{% endif %}>Житомирська область</option>
+                            <option value="Івано-Франківськ" {% if region_filter == 'Івано-Франківськ' %}selected{% endif %}>Івано-Франківськ</option>
+                            <option value="Івано-Франківська область" {% if region_filter == 'Івано-Франківська область' %}selected{% endif %}>Івано-Франківська область</option>
+                            <option value="Кропивницький" {% if region_filter == 'Кропивницький' %}selected{% endif %}>Кропивницький</option>
+                            <option value="Кіровоградська область" {% if region_filter == 'Кіровоградська область' %}selected{% endif %}>Кіровоградська область</option>
+                            <option value="Луцьк" {% if region_filter == 'Луцьк' %}selected{% endif %}>Луцьк</option>
+                            <option value="Волинська область" {% if region_filter == 'Волинська область' %}selected{% endif %}>Волинська область</option>
+                            <option value="Миколаїв" {% if region_filter == 'Миколаїв' %}selected{% endif %}>Миколаїв</option>
+                            <option value="Миколаївська область" {% if region_filter == 'Миколаївська область' %}selected{% endif %}>Миколаївська область</option>
+                            <option value="Полтава" {% if region_filter == 'Полтава' %}selected{% endif %}>Полтава</option>
+                            <option value="Полтавська область" {% if region_filter == 'Полтавська область' %}selected{% endif %}>Полтавська область</option>
+                            <option value="Рівне" {% if region_filter == 'Рівне' %}selected{% endif %}>Рівне</option>
+                            <option value="Рівненська область" {% if region_filter == 'Рівненська область' %}selected{% endif %}>Рівненська область</option>
+                            <option value="Суми" {% if region_filter == 'Суми' %}selected{% endif %}>Суми</option>
+                            <option value="Сумська область" {% if region_filter == 'Сумська область' %}selected{% endif %}>Сумська область</option>
+                            <option value="Тернопіль" {% if region_filter == 'Тернопіль' %}selected{% endif %}>Тернопіль</option>
+                            <option value="Тернопільська область" {% if region_filter == 'Тернопільська область' %}selected{% endif %}>Тернопільська область</option>
+                            <option value="Ужгород" {% if region_filter == 'Ужгород' %}selected{% endif %}>Ужгород</option>
+                            <option value="Закарпатська область" {% if region_filter == 'Закарпатська область' %}selected{% endif %}>Закарпатська область</option>
+                            <option value="Хмельницький" {% if region_filter == 'Хмельницький' %}selected{% endif %}>Хмельницький</option>
+                            <option value="Хмельницька область" {% if region_filter == 'Хмельницька область' %}selected{% endif %}>Хмельницька область</option>
+                            <option value="Черкаси" {% if region_filter == 'Черкаси' %}selected{% endif %}>Черкаси</option>
+                            <option value="Черкаська область" {% if region_filter == 'Черкаська область' %}selected{% endif %}>Черкаська область</option>
+                            <option value="Чернівці" {% if region_filter == 'Чернівці' %}selected{% endif %}>Чернівці</option>
+                            <option value="Чернівецька область" {% if region_filter == 'Чернівецька область' %}selected{% endif %}>Чернівецька область</option>
+                            <option value="Чернігів" {% if region_filter == 'Чернігів' %}selected{% endif %}>Чернігів</option>
+                            <option value="Чернігівська область" {% if region_filter == 'Чернігівська область' %}selected{% endif %}>Чернігівська область</option>
+                            <option value="Донецьк" {% if region_filter == 'Донецьк' %}selected{% endif %}>Донецьк</option>
+                            <option value="Донецька область" {% if region_filter == 'Донецька область' %}selected{% endif %}>Донецька область</option>
+                            <option value="Луганськ" {% if region_filter == 'Луганськ' %}selected{% endif %}>Луганськ</option>
+                            <option value="Луганська область" {% if region_filter == 'Луганська область' %}selected{% endif %}>Луганська область</option>
+                            <option value="Севастополь" {% if region_filter == 'Севастополь' %}selected{% endif %}>Севастополь</option>
+                            <option value="АР Крим" {% if region_filter == 'АР Крим' %}selected{% endif %}>АР Крим</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Тип палива</label>
+                        <select name="fuel_type">
+                            <option value="">Всі</option>
+                            <option value="petrol">Бензин</option>
+                            <option value="diesel">Дизель</option>
+                            <option value="electric">Електрика</option>
+                            <option value="hybrid">Гібрид</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Коробка передач</label>
+                        <select name="transmission">
+                            <option value="">Всі</option>
+                            <option value="manual">Механічна</option>
+                            <option value="automatic">Автоматична</option>
+                            <option value="robot">Робот</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button type="submit" class="btn btn-primary">Застосувати фільтри</button>
+                    <a href="/" class="btn btn-secondary">Скинути</a>
+                </div>
+            </form>
+        </div>
+        
+        {% if listings %}
+            {% for listing in listings %}
+            <div class="listing" onclick="window.location.href='/listing/{{ listing.id }}'" style="cursor: pointer;">
+                {% if listing.photos %}
+                    {% set photos_list = listing.photos if listing.photos is iterable and listing.photos is not string else [] %}
+                    {% if photos_list|length > 0 and photos_list[0] %}
+                        <div style="width: 100%; height: 200px; overflow: hidden; border-radius: 5px; margin-bottom: 15px; background: #f5f5f5;">
+                            <img src="{{ photos_list[0] }}" alt="Фото" 
+                                 style="width: 100%; height: 100%; object-fit: cover; display: block;"
+                                 onerror="this.style.display='none';"
+                                 loading="lazy">
+                        </div>
+                    {% endif %}
+                {% endif %}
+                <h3>
+                    {% if listing.brandName and listing.modelName %}
+                        {{ listing.brandName }} {{ listing.modelName }}
+                    {% else %}
+                        Оголошення #{{ listing.id }}
+                    {% endif %}
+                    {% if listing.status == 'active' %}
+                    <span class="premium-badge">Активне</span>
+                    {% endif %}
+                </h3>
+                <p><strong>Рік:</strong> {{ listing.year }}</p>
+                <p><strong>Ціна:</strong> 
+                    {% if listing.currency == 'USD' %}
+                        {{ "%.0f"|format(listing.price) }} USD 
+                        ({{ "%.0f"|format(listing.priceUAH) }} грн, 
+                         {{ "%.0f"|format(listing.priceEUR) }} €)
+                    {% elif listing.currency == 'EUR' %}
+                        {{ "%.0f"|format(listing.price) }} € 
+                        ({{ "%.0f"|format(listing.priceUAH) }} грн, 
+                         {{ "%.0f"|format(listing.priceUSD) }} $)
+                    {% else %}
+                        {{ "%.0f"|format(listing.price) }} грн 
+                        ({{ "%.0f"|format(listing.priceUSD) }} $, 
+                         {{ "%.0f"|format(listing.priceEUR) }} €)
+                    {% endif %}
+                </p>
+                <p><strong>Регіон:</strong> {% if listing.get('region') and listing.get('region')|trim %}{{ listing.get('region') }}{% elif listing.region and listing.region|trim %}{{ listing.region }}{% else %}Не вказано{% endif %}</p>
+                <p><strong>Пробіг:</strong> {{ listing.mileage }} км</p>
+                {% if listing.seller %}
+                <p style="margin-top: 10px; color: #999; font-size: 14px;">
+                    <strong>Продавець:</strong> {{ listing.seller.firstName }} {{ listing.seller.lastName }}
+                </p>
+                {% endif %}
+            </div>
+            {% endfor %}
+            
+            {% if total_pages > 1 %}
+            <div class="pagination">
+                {% if page > 1 %}
+                <a href="?page={{ page - 1 }}{% if brand_filter %}&brand={{ brand_filter }}{% endif %}{% if min_price %}&min_price={{ min_price }}{% endif %}{% if max_price %}&max_price={{ max_price }}{% endif %}{% if region_filter %}&region={{ region_filter }}{% endif %}">‹ Попередня</a>
+                {% endif %}
+                
+                {% for p in range(1, total_pages + 1) %}
+                    {% if p == page %}
+                    <span class="active">{{ p }}</span>
+                    {% elif p <= 3 or p > total_pages - 3 or (p >= page - 1 and p <= page + 1) %}
+                    <a href="?page={{ p }}{% if brand_filter %}&brand={{ brand_filter }}{% endif %}{% if min_price %}&min_price={{ min_price }}{% endif %}{% if max_price %}&max_price={{ max_price }}{% endif %}{% if region_filter %}&region={{ region_filter }}{% endif %}">{{ p }}</a>
+                    {% elif p == 4 or p == total_pages - 3 %}
+                    <span>...</span>
+                    {% endif %}
+                {% endfor %}
+                
+                {% if page < total_pages %}
+                <a href="?page={{ page + 1 }}{% if brand_filter %}&brand={{ brand_filter }}{% endif %}{% if min_price %}&min_price={{ min_price }}{% endif %}{% if max_price %}&max_price={{ max_price }}{% endif %}{% if region_filter %}&region={{ region_filter }}{% endif %}">Наступна ›</a>
+                {% endif %}
+            </div>
+            {% endif %}
+        {% else %}
+        <div class="empty-state">
+            <h2>Оголошень поки немає</h2>
+            <p>Будьте першим, хто додасть оголошення!</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        function updateUrlParam(param, value) {
+            const url = new URL(window.location);
+            if (value) {
+                url.searchParams.set(param, value);
+            } else {
+                url.searchParams.delete(param);
+            }
+            return url.toString();
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,479 @@
+<!-- FILE: frontend/templates/listing_details.html -->
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ brand }} {{ model }} - AutoRia Clone</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .navbar {
+            background: white;
+            padding: 15px 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .navbar h1 {
+            color: #667eea;
+            font-size: 24px;
+        }
+        .nav-links {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        .nav-links a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .nav-links a:hover {
+            text-decoration: underline;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+        .listing-details {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        .listing-header {
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        .listing-header h2 {
+            color: #667eea;
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: bold;
+            margin-left: 15px;
+        }
+        .status-active {
+            background: #28a745;
+            color: white;
+        }
+        .status-pending {
+            background: #ffc107;
+            color: #333;
+        }
+        .status-rejected {
+            background: #dc3545;
+            color: white;
+        }
+        .details-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .detail-item {
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+        .detail-item label {
+            display: block;
+            color: #666;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+        .detail-item value {
+            display: block;
+            color: #333;
+            font-size: 18px;
+            font-weight: 500;
+        }
+        .price-section {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px;
+            border-radius: 10px;
+            margin: 30px 0;
+        }
+        .price-section h3 {
+            margin-bottom: 15px;
+        }
+        .price-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+        }
+        .price-row:last-child {
+            border-bottom: none;
+        }
+        .description {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+            line-height: 1.6;
+            color: #333;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .stat-item {
+            text-align: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+        .stat-item label {
+            display: block;
+            color: #666;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+        .stat-item value {
+            display: block;
+            color: #667eea;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .comment {
+            border-bottom: 1px solid #eee;
+            padding: 15px 0;
+        }
+        .comment:last-child {
+            border-bottom: none;
+        }
+        .comment-author {
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+        .comment-date {
+            color: #999;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1><a href="/" style="color: #667eea; text-decoration: none;">🚗 AutoRia Clone</a></h1>
+        <div class="nav-links">
+            <a href="/">Головна</a>
+            {% if user %}
+            <a href="/create-listing">Створити оголошення</a>
+            <a href="/my-listings">Мої оголошення</a>
+            <a href="/favorites">Обрані</a>
+            <a href="/notifications">Сповіщення</a>
+            <a href="/seller/stats">Статистика</a>
+            <a href="/profile">Профіль</a>
+            <a href="/logout" class="btn btn-secondary">Вихід</a>
+            {% else %}
+            <a href="/login">Вхід</a>
+            {% endif %}
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="listing-details">
+            <div class="listing-header">
+                <h2>{{ brand }} {{ model }}
+                    <span class="status-badge status-{{ listing.status }}">
+                        {% if listing.status == 'active' %}Активне
+                        {% elif listing.status == 'pending' %}На модерації
+                        {% elif listing.status == 'rejected' %}Відхилене
+                        {% elif listing.status == 'inactive' %}Неактивне
+                        {% else %}{{ listing.status }}
+                        {% endif %}
+                    </span>
+                </h2>
+                <p style="color: #666; font-size: 14px;">Оголошення #{{ listing.id }}</p>
+            </div>
+
+            <div class="details-grid">
+                <div class="detail-item">
+                    <label>Рік випуску</label>
+                    <value>{{ listing.year }}</value>
+                </div>
+                <div class="detail-item">
+                    <label>Пробіг</label>
+                    <value>{{ listing.mileage }} км</value>
+                </div>
+                <div class="detail-item">
+                    <label>Регіон</label>
+                    <value>{% if listing.get('region') and listing.get('region')|trim %}{{ listing.get('region') }}{% elif listing.region and listing.region|trim %}{{ listing.region }}{% else %}Не вказано{% endif %}</value>
+                </div>
+                <div class="detail-item">
+                    <label>Валюта</label>
+                    <value>{{ listing.currency }}</value>
+                </div>
+            </div>
+
+            <div class="price-section">
+                <h3>Ціна</h3>
+                <div class="price-row">
+                    <span>Основна валюта:</span>
+                    <strong>
+                        {% if listing.currency == 'USD' %}
+                            {{ "%.0f"|format(listing.price) }} $
+                        {% elif listing.currency == 'EUR' %}
+                            {{ "%.0f"|format(listing.price) }} €
+                        {% else %}
+                            {{ "%.0f"|format(listing.price) }} грн
+                        {% endif %}
+                    </strong>
+                </div>
+                <div class="price-row">
+                    <span>USD:</span>
+                    <strong>{{ "%.0f"|format(listing.priceUSD) }} $</strong>
+                </div>
+                <div class="price-row">
+                    <span>EUR:</span>
+                    <strong>{{ "%.0f"|format(listing.priceEUR) }} €</strong>
+                </div>
+                <div class="price-row">
+                    <span>UAH:</span>
+                    <strong>{{ "%.0f"|format(listing.priceUAH) }} грн</strong>
+                </div>
+                <p style="margin-top: 15px; font-size: 12px; opacity: 0.8;">
+                    Курс на момент створення: {{ "%.2f"|format(listing.exchangeRate) }}
+                </p>
+            </div>
+
+            <div class="description">
+                <h3 style="margin-bottom: 15px; color: #333;">Опис</h3>
+                {% if listing.get('description') and listing.get('description')|trim %}
+                    <p style="white-space: pre-wrap; word-wrap: break-word; line-height: 1.6;">{{ listing.get('description') }}</p>
+                {% elif listing.description and listing.description|trim %}
+                    <p style="white-space: pre-wrap; word-wrap: break-word; line-height: 1.6;">{{ listing.description }}</p>
+                {% else %}
+                    <p style="color: #999; font-style: italic;">Опис відсутній</p>
+                {% endif %}
+            </div>
+
+            <div style="margin-top: 20px; background: #f8f9fa; padding: 20px; border-radius: 5px;">
+                <h3 style="margin-bottom: 15px; color: #333;">Додаткові характеристики</h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                    {% if listing.get('fuelType') %}
+                    <div>
+                        <strong>Тип палива:</strong> 
+                        {% if listing.fuelType == 'petrol' %}Бензин
+                        {% elif listing.fuelType == 'diesel' %}Дизель
+                        {% elif listing.fuelType == 'electric' %}Електрика
+                        {% elif listing.fuelType == 'hybrid' %}Гібрид
+                        {% else %}{{ listing.fuelType }}{% endif %}
+                    </div>
+                    {% endif %}
+                    {% if listing.get('transmission') %}
+                    <div>
+                        <strong>Коробка передач:</strong> 
+                        {% if listing.transmission == 'manual' %}Механічна
+                        {% elif listing.transmission == 'automatic' %}Автоматична
+                        {% elif listing.transmission == 'robot' %}Робот
+                        {% else %}{{ listing.transmission }}{% endif %}
+                    </div>
+                    {% endif %}
+                    {% if listing.get('color') %}
+                    <div><strong>Колір:</strong> {{ listing.color }}</div>
+                    {% endif %}
+                    {% if listing.get('engineVolume') and listing.engineVolume > 0 %}
+                    <div><strong>Об'єм двигуна:</strong> {{ listing.engineVolume }} л</div>
+                    {% endif %}
+                    {% if listing.get('bodyType') %}
+                    <div>
+                        <strong>Тип кузова:</strong> 
+                        {% if listing.bodyType == 'sedan' %}Седан
+                        {% elif listing.bodyType == 'hatchback' %}Хетчбек
+                        {% elif listing.bodyType == 'suv' %}SUV
+                        {% elif listing.bodyType == 'coupe' %}Купе
+                        {% elif listing.bodyType == 'wagon' %}Універсал
+                        {% elif listing.bodyType == 'van' %}Фургон
+                        {% else %}{{ listing.bodyType }}{% endif %}
+                    </div>
+                    {% endif %}
+                    {% if listing.get('doorsCount') and listing.doorsCount > 0 %}
+                    <div><strong>Кількість дверей:</strong> {{ listing.doorsCount }}</div>
+                    {% endif %}
+                    {% if listing.get('enginePower') and listing.enginePower > 0 %}
+                    <div><strong>Потужність:</strong> {{ listing.enginePower }} к.с.</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if listing.seller %}
+            <div class="detail-item" style="margin-top: 20px; background: #e3f2fd; padding: 20px; border-radius: 5px;">
+                <label style="color: #666; font-size: 12px; margin-bottom: 5px;">Продавець</label>
+                <value style="color: #333; font-size: 18px; font-weight: 500;">
+                    {{ listing.seller.firstName }} {{ listing.seller.lastName }}
+                </value>
+                <p style="color: #666; font-size: 14px; margin-top: 5px;">{{ listing.seller.email }}</p>
+            </div>
+            {% endif %}
+
+            <div style="margin-top: 20px;">
+                <h3 style="margin-bottom: 15px; color: #333;">Фотографії</h3>
+                {% if listing.get('photos') and listing.photos|length > 0 %}
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                        {% for photo in listing.photos %}
+                            {% if photo and photo is string and photo|trim != '' and not photo.startswith('placeholder_') %}
+                            <div style="position: relative; overflow: hidden; border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); background: #f5f5f5;">
+                                <img src="http://localhost:8080{{ photo }}" alt="Фото оголошення" 
+                                     style="width: 100%; height: 200px; object-fit: cover; cursor: pointer; display: block;" 
+                                     onerror="this.onerror=null; this.style.display='none'; this.parentElement.innerHTML='<div style=\'padding: 50px; text-align: center; color: #999;\'>Фото не завантажилось</div>';"
+                                     onclick="window.open('http://localhost:8080{{ photo }}', '_blank')"
+                                     loading="lazy">
+                            </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div style="padding: 20px; background: #f8f9fa; border-radius: 5px; text-align: center; color: #999; margin-bottom: 20px;">
+                        <p>Фотографії відсутні</p>
+                    </div>
+                {% endif %}
+                
+                {% if user and is_owner %}
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 5px;">
+                    <h4 style="margin-bottom: 15px; color: #333;">Додати фото</h4>
+                    <form method="POST" action="/listing/{{ listing.id }}/upload-photo" enctype="multipart/form-data">
+                        <input type="file" name="photo" accept="image/*" required style="margin-bottom: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; width: 100%;">
+                        <button type="submit" class="btn" style="background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">
+                            Завантажити фото
+                        </button>
+                    </form>
+                </div>
+                {% endif %}
+            </div>
+
+            <div style="margin-top: 30px; display: flex; gap: 15px; flex-wrap: wrap;">
+                {% if user %}
+                    {% if is_owner %}
+                        {% if listing.status != 'sold' %}
+                        <a href="/listing/{{ listing.id }}/edit" class="btn" style="background: #667eea; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; text-decoration: none;">
+                            Редагувати
+                        </a>
+                        <form method="POST" action="/listing/{{ listing.id }}/delete" style="display: inline;" onsubmit="return confirm('Ви впевнені, що хочете видалити це оголошення?');">
+                            <button type="submit" class="btn" style="background: #dc3545; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">
+                                Видалити
+                            </button>
+                        </form>
+                        <form method="POST" action="/listing/{{ listing.id }}/sold" style="display: inline;">
+                            <button type="submit" class="btn" style="background: #28a745; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">
+                                Позначити як продано
+                            </button>
+                        </form>
+                        {% else %}
+                        <div style="padding: 12px 24px; background: #dc3545; color: white; border-radius: 5px; font-size: 16px;">
+                            Продано
+                        </div>
+                        {% endif %}
+                    {% else %}
+                        {% if listing.status == 'active' %}
+                        <form method="POST" action="/listing/{{ listing.id }}/favorite" style="display: inline;" id="favorite-form">
+                            <button type="submit" class="btn" style="background: #ffc107; color: black; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">
+                                ⭐ Додати до обраних
+                            </button>
+                        </form>
+                        <form method="POST" action="/listing/{{ listing.id }}/purchase" style="display: inline;">
+                            <input type="text" name="message" placeholder="Повідомлення продавцю (опціонально)" style="padding: 10px; border: 1px solid #ddd; border-radius: 5px; margin-right: 10px; width: 300px;">
+                            <button type="submit" class="btn" style="background: #667eea; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">
+                                Запитати про покупку
+                            </button>
+                        </form>
+                        {% endif %}
+                    {% endif %}
+                {% else %}
+                <a href="/login" class="btn" style="background: #667eea; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; text-decoration: none;">
+                    Увійти для покупки
+                </a>
+                {% endif %}
+            </div>
+            
+            <div style="margin-top: 30px; background: white; padding: 20px; border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                <h3 style="margin-bottom: 15px; color: #333;">Коментарі</h3>
+                <div id="comments-list">
+                    {% if comments %}
+                        {% for comment in comments %}
+                        <div class="comment">
+                            <div class="comment-author">
+                                {{ comment.user.firstName }} {{ comment.user.lastName }}
+                            </div>
+                            <p>{{ comment.commentText }}</p>
+                            <div class="comment-date">{{ comment.createdAt }}</div>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                    <p style="color: #999;">Поки немає коментарів</p>
+                    {% endif %}
+                </div>
+                {% if user and not is_owner %}
+                <form method="POST" action="/listing/{{ listing.id }}/comment" style="margin-top: 20px;">
+                    <textarea name="comment_text" placeholder="Додайте коментар..." style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; min-height: 80px;" required></textarea>
+                    <button type="submit" class="btn" style="background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-top: 10px;">
+                        Додати коментар
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+
+            <div class="stats">
+                <div class="stat-item">
+                    <label>Переглядів</label>
+                    <value>{{ listing.viewCount }}</value>
+                </div>
+                <div class="stat-item">
+                    <label>Редагувань</label>
+                    <value>{{ listing.editCount }}</value>
+                </div>
+                {% if listing.get('statistics') %}
+                <div class="stat-item">
+                    <label>Переглядів за день</label>
+                    <value>{{ listing.statistics.viewsPerDay }}</value>
+                </div>
+                <div class="stat-item">
+                    <label>Переглядів за тиждень</label>
+                    <value>{{ listing.statistics.viewsPerWeek }}</value>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+

@@ -1,0 +1,97 @@
+<!-- FILE: frontend/templates/notifications.html -->
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Сповіщення - AutoRia Clone</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .navbar {
+            background: white;
+            padding: 15px 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .navbar h1 {
+            color: #667eea;
+            font-size: 24px;
+        }
+        .nav-links {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        .nav-links a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .container {
+            max-width: 800px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+        .notification {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        .notification.unread {
+            border-left: 4px solid #667eea;
+        }
+        .notification.read {
+            opacity: 0.7;
+        }
+        .empty-state {
+            background: white;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1><a href="/" style="color: #667eea; text-decoration: none;">🚗 AutoRia Clone</a></h1>
+        <div class="nav-links">
+            <a href="/">Головна</a>
+            <a href="/create-listing">Створити оголошення</a>
+            <a href="/my-listings">Мої оголошення</a>
+            <a href="/favorites">Обрані</a>
+            <a href="/profile">Профіль</a>
+            <a href="/logout">Вихід</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h2 style="color: white; margin-bottom: 20px;">🔔 Сповіщення</h2>
+        
+        {% if notifications %}
+            {% for notif in notifications %}
+            <div class="notification {% if notif.isRead %}read{% else %}unread{% endif %}">
+                <p><strong>{{ notif.message }}</strong></p>
+                <p style="color: #999; font-size: 12px; margin-top: 5px;">
+                    {{ notif.type }} • {{ notif.createdAt }}
+                </p>
+            </div>
+            {% endfor %}
+        {% else %}
+        <div class="empty-state">
+            <h2>Сповіщень поки немає</h2>
+            <p>Тут будуть відображатися ваші сповіщення</p>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+

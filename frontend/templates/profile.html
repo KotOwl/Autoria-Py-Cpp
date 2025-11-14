@@ -1,0 +1,197 @@
+<!-- FILE: frontend/templates/profile.html -->
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Профіль - AutoRia Clone</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .navbar {
+            background: white;
+            padding: 15px 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .navbar h1 {
+            color: #667eea;
+            font-size: 24px;
+        }
+        .nav-links {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        .nav-links a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .nav-links a:hover {
+            text-decoration: underline;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+        .profile-card {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .profile-card h2 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .profile-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+        .info-item {
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+        .info-item label {
+            display: block;
+            color: #666;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+        .info-item value {
+            display: block;
+            color: #333;
+            font-size: 16px;
+            font-weight: 500;
+        }
+        .premium-badge {
+            background: gold;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: bold;
+            display: inline-block;
+        }
+        .role-badge {
+            background: #667eea;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            margin-left: 5px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1><a href="/" style="color: #667eea; text-decoration: none;">🚗 AutoRia Clone</a></h1>
+        <div class="nav-links">
+            <a href="/">Головна</a>
+            <a href="/my-listings">Мої оголошення</a>
+            <a href="/logout" class="btn btn-secondary">Вихід</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="profile-card">
+            <h2>Мій профіль</h2>
+            <div class="profile-info">
+                <div class="info-item">
+                    <label>Email</label>
+                    <value>{{ user.email }}</value>
+                </div>
+                <div class="info-item">
+                    <label>Ім'я</label>
+                    <value>{{ user.firstName }} {{ user.lastName }}</value>
+                </div>
+                <div class="info-item">
+                    <label>Тип акаунту</label>
+                    <value>
+                        {% if user.accountType == 'premium' %}
+                        <span class="premium-badge">Преміум</span>
+                        {% else %}
+                        Базовий
+                        {% endif %}
+                    </value>
+                </div>
+                <div class="info-item">
+                    <label>Ролі</label>
+                    <value>
+                        {% for role in user.roles %}
+                        <span class="role-badge">{{ role }}</span>
+                        {% endfor %}
+                    </value>
+                </div>
+            </div>
+        </div>
+
+        <div class="profile-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2>Мої оголошення ({{ listings|length if listings else 0 }})</h2>
+                <a href="/seller/stats" class="btn btn-primary" style="text-decoration: none;">📊 Статистика</a>
+            </div>
+            {% if listings %}
+                {% if listings|length > 0 %}
+                <p style="margin-bottom: 15px;"><a href="/my-listings" style="color: #667eea; text-decoration: none;">Переглянути всі оголошення →</a></p>
+                {% for listing in listings[:3] %}
+                <div style="padding: 15px; border-bottom: 1px solid #eee;">
+                    <h3>
+                        <a href="/listing/{{ listing.id }}" style="color: #667eea; text-decoration: none;">
+                            {% if listing.get('brandName') and listing.get('modelName') %}
+                                {{ listing.brandName }} {{ listing.modelName }}
+                            {% elif listing.get('brandName') %}
+                                {{ listing.brandName }}
+                            {% else %}
+                                Оголошення #{{ listing.id }}
+                            {% endif %}
+                        </a>
+                    </h3>
+                    <p><strong>Ціна:</strong> {{ listing.get('price', 0) }} {{ listing.get('currency', 'UAH') }}</p>
+                    <p><strong>Статус:</strong> 
+                        {% if listing.get('status') == 'active' %}Активне
+                        {% elif listing.get('status') == 'pending' %}На модерації
+                        {% elif listing.get('status') == 'rejected' %}Відхилене
+                        {% elif listing.get('status') == 'sold' %}Продано
+                        {% else %}{{ listing.get('status', 'Невідомо') }}
+                        {% endif %}
+                    </p>
+                </div>
+                {% endfor %}
+                {% else %}
+                <p style="color: #666;">У вас поки немає оголошень</p>
+                <p style="margin-top: 10px;"><a href="/create-listing" class="btn btn-primary" style="text-decoration: none;">Створити перше оголошення</a></p>
+                {% endif %}
+            {% else %}
+            <p style="color: #666;">Помилка завантаження оголошень</p>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
+

@@ -1,0 +1,80 @@
+<!-- FILE: frontend/templates/messages.html -->
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Повідомлення - AutoRia Clone</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .navbar {
+            background: white;
+            padding: 15px 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .navbar h1 { color: #667eea; font-size: 24px; }
+        .nav-links { display: flex; gap: 15px; align-items: center; }
+        .nav-links a { color: #667eea; text-decoration: none; }
+        .container { max-width: 900px; margin: 30px auto; padding: 0 20px; }
+        .card { background: white; border-radius: 10px; padding: 16px; margin: 12px 0; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        .meta { color: #666; font-size: 12px; margin-top: 6px; }
+        .link { color: #667eea; text-decoration: none; }
+        .empty { background: white; border-radius: 10px; padding: 40px; text-align: center; color: #666; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; background: #eef; color: #446; margin-left: 8px; }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1><a href="/" style="color: #667eea; text-decoration: none;">🚗 AutoRia Clone</a></h1>
+        <div class="nav-links">
+            <a href="/">Головна</a>
+            <a href="/create-listing">Створити</a>
+            <a href="/my-listings">Мої</a>
+            <a href="/favorites">Обрані</a>
+            <a href="/notifications">Сповіщення</a>
+            <a href="/messages">Повідомлення</a>
+            <a href="/profile">Профіль</a>
+            <a href="/logout">Вихід</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h2 style="color: white; margin-bottom: 20px;">✉️ Повідомлення</h2>
+
+        {% if messages and messages|length > 0 %}
+            {% for m in messages %}
+                <div class="card">
+                    <div>
+                        {% if m.sender %}
+                            <strong>{{ m.sender.firstName }} {{ m.sender.lastName }}</strong>
+                        {% else %}
+                            <strong>Користувач #{{ m.senderId }}</strong>
+                        {% endif %}
+                        <span class="badge">{{ m.createdAt }}</span>
+                    </div>
+                    <div style="margin-top:8px; white-space: pre-line;">{{ m.messageText }}</div>
+                    {% if m.listingId %}
+                        <div class="meta" style="margin-top:8px;">
+                            До оголошення: <a class="link" href="/listing/{{ m.listingId }}">Перейти до оголошення #{{ m.listingId }}</a>
+                        </div>
+                    {% endif %}
+                </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty">
+                <h3>Повідомлень поки немає</h3>
+                <p>Тут будуть ваші діалоги та повідомлення. Оберіть оголошення та напишіть продавцю.</p>
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+
