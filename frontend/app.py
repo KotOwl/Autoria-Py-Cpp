@@ -645,7 +645,7 @@ def listing_details(listing_id):
                 listing['region'] = region.encode('latin-1', errors='ignore').decode('utf-8', errors='ignore')
     
     html = render_template('listing_details.html', listing=listing, brand=brand, 
-                           model=model, user=user, is_owner=is_owner, comments=comments)
+                             model=model, user=user, is_owner=is_owner, comments=comments)
     return make_response(html, 200, {'Content-Type': 'text/html; charset=utf-8'})
 
 @app.route('/listing/<int:listing_id>/purchase', methods=['POST'])
