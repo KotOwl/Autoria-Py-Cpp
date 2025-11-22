@@ -170,8 +170,14 @@
             <a href="/">Головна</a>
             {% if user %}
             <div class="user-info">
-                <a href="/create-listing" class="btn btn-primary">Створити оголошення</a>
-                <a href="/profile" class="profile-link">{{ user.firstName }} {{ user.lastName }}</a>
+                <a href="/create-listing" class="btn btn-primary" style="background: #28a745; color: white; padding: 8px 15px; border-radius: 5px; text-decoration: none;">Створити оголошення</a>
+                {% if user.roles %}
+                    {% for role in user.roles %}
+                        {% if role == 'administrator' %}
+                        <a href="/admin" class="btn btn-primary" style="background: #dc3545; color: white; padding: 8px 15px; border-radius: 5px; text-decoration: none;">🔧 Адмін</a>
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}                <a href="/profile" class="profile-link">{{ user.firstName }} {{ user.lastName }}</a>
                 <a href="/logout" class="btn btn-secondary">Вихід</a>
             </div>
             {% else %}
